@@ -15,4 +15,5 @@
   <Project Path="tools/SharpProspero.Bindings.Generator/SharpProspero.Bindings.Generator.csproj" />
   <Project Path="tools/SharpProspero.Packager/SharpProspero.Packager.csproj" />
   <Project Path="tools/SharpProspero.Texture/SharpProspero.Texture.csproj" />
+  <Project Path="tests/SharpProspero.Tests/SharpProspero.Tests.csproj" />
 </Solution>
