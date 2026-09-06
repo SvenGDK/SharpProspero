@@ -96,4 +96,25 @@ public static unsafe class KernelPaging
         }
         return true;
     }
+
+    /// <summary>
+    /// Derives the CR3 page-table root for a process identified by PID.
+    /// Walks the allproc list, reads <c>proc->p_vmspace->vm_pmap.pm_cr3</c>.
+    /// </summary>
+    /// <param name="io">Kernel I/O for reading process structures.</param>
+    /// <param name="pid">The target process identifier.</param>
+    /// <param name="fwMajorMinor">Firmware major.minor (e.g. 0x1001 for FW 10.01).</param>
+    /// <returns>The process CR3, or zero if the process cannot be found.</returns>
+    public static ulong GetProcessCr3(PayloadKernelIo io, int pid, uint fwMajorMinor)
+    {
+        ulong proc = PayloadKernel.WalkAllprocForPid(io, pid);
+        if (proc == 0) return 0;
+
+        ulong vmspace = io.ReadU64(proc + (ulong)KernelOffsets.ProcVmspace);
+        if (vmspace == 0) return 0;
+
+        int pmapOff = KernelOffsets.VmspacePmapOffset(fwMajorMinor);
+        ulong pmCr3 = io.ReadU64(vmspace + (ulong)pmapOff + 40);
+        return pmCr3;
+    }
 }

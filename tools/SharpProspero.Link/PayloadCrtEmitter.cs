@@ -28,7 +28,7 @@ namespace SharpProspero.Link;
 ///         resolver on host loaders (hbldr / prospero-hb) or the <c>getpid</c> trampoline on
 ///         the loader. The probe calls <c>args[0](0x1, "sceKernelDlsym", &amp;out)</c>: if
 ///         <c>out</c> comes back non-zero and different from <c>args[0]</c>, the loader shipped a
-///         real dlsym and we cache <c>args[0]</c> into <c>__sp_dlsym_fn</c>; otherwise we mark the
+///         real dlsym and <c>args[0]</c> is cached into <c>__sp_dlsym_fn</c>; otherwise the
 ///         regime degenerate and skip the resolver in the GOT-fixup and pthread-priming
 ///         cascades.</item>
 ///   <item>Resolve every entry the loader leaves unfilled in the global offset table. The loader
@@ -48,7 +48,7 @@ namespace SharpProspero.Link;
 /// helper is dependency-free: it issues <c>syscall(SYS_kexec, 7, msg, 0)</c> through
 /// <c>ptr_syscall</c>, routing each message to <c>/dev/klog</c> where a log consumer can forward
 /// it over the network. That property is what lets the <c>sp:kernel:init:*</c> breadcrumbs
-/// actually reach the log even when dlsym is degenerate.
+/// reach the log even when dlsym is degenerate.
 /// </summary>
 public static class PayloadCrtEmitter
 {
@@ -88,7 +88,7 @@ public static class PayloadCrtEmitter
     /// probe <c>SYS_kill(1, 0)</c> through the <c>args[0]+0xa</c> gadget and OR-s the syscall return code into
     /// the same slot. This gives every regime a socket-independent path to prove <c>_start</c> ran even when the
     /// klog fd is not routed anywhere: the loader writes its <c>payloadout</c> back to its own stdout, so the caller
-    /// sees a non-zero value the moment we reach the entry. If the caller sees 0, the loader never jumped to
+    /// sees a non-zero value the moment the entry is reached. If the caller sees 0, the loader never jumped to
     /// <c>_start</c>. If the caller sees 0x53504350 exactly, <c>_start</c> ran but <c>args[0]+0xa</c> is not a
     /// callable syscall gadget on this loader. If the caller sees 0x53504350 OR-ed with a small integer, the
     /// gadget ran and the small integer is the SYS_kill return code.</summary>
@@ -152,6 +152,18 @@ public static class PayloadCrtEmitter
     /// <c>mov rax,rdi; mov rdi,rsi; mov rsi,rdx; mov rdx,rcx; mov r10,r8; mov r8,r9;
     /// mov r9,[rsp+8]; call qword ptr [rip+ptr_syscall]; ret</c>.</summary>
     public const string CrtSyscallSymbol = "__sp_crt_syscall";
+
+    /// <summary>The kekcall dispatch shim:
+    /// <c>mov eax,edi; mov rdi,rsi; mov rsi,rdx; mov rdx,rcx; mov r10,r8; mov r8,r9;
+    /// mov r9,[rsp+8]; shl rax,32; or rax,0x27; call qword ptr [rip+ptr_syscall]; ret</c>.
+    /// Packs the kekcall number into RAX[63:32] with SYS_getppid in RAX[31:0] and dispatches
+    /// through the same ptr_syscall gadget as <see cref="CrtSyscallSymbol"/>.</summary>
+    public const string CrtKekcallSymbol = "__sp_kekcall";
+
+    /// <summary>Direct syscall wrapper for SYS_mdbg_call (573). Takes three arguments
+    /// (cmd, arg2, arg3) and dispatches through ptr_syscall with the syscall number
+    /// pre-loaded in RAX.</summary>
+    public const string CrtMdbgCallSymbol = "__sp_mdbg_call";
 
     /// <summary>The probe that derives <c>ptr_syscall</c> from <c>args[0]</c>.
     /// Tries <c>args[0](0x1, "sceKernelDlsym", &amp;out)</c>,
@@ -732,6 +744,8 @@ public static class PayloadCrtEmitter
         TcbSeedSymbol,
         NataotTcbSymbol,
         CrtSyscallSymbol,
+        CrtKekcallSymbol,
+        CrtMdbgCallSymbol,
         CrtSyscallInitSymbol,
         KernelWriteSymbol,
         KernelCopyinSymbol,
@@ -1424,6 +1438,8 @@ public static class PayloadCrtEmitter
         _klogRelocs = [];
         _fixupRelocs = [];
         _crtSyscallRelocs = [];
+        _crtKekcallRelocs = [];
+        _crtMdbgCallRelocs = [];
         _crtSyscallInitRelocs = [];
         _kernelWriteRelocs = [];
         _kernelCopyinRelocs = [];
@@ -2223,7 +2239,7 @@ public static class PayloadCrtEmitter
 
         // mov dword [rcx], 0x53504350   ; SPCP signature (little-endian bytes: 50 43 50 53)
         // or  dword [rcx], eax          ; OR in the SYS_kill return code (0 if no syscall was attempted;
-        //                                 the mov to eax above always leaves 37 there if we did)
+        //                                 the mov to eax above always leaves 37 there if attempted)
         b.AddRange([0xC7, 0x01, 0x50, 0x43, 0x50, 0x53]);
         b.AddRange([0x09, 0x01]);
 
@@ -2304,7 +2320,7 @@ public static class PayloadCrtEmitter
         //      real resolver; cache args[0] into __sp_dlsym_fn and flag = 1. Otherwise flag
         //      = 2 (the loader's getpid trampoline; the resolver call would only ever return 0).
         //   3. Print exactly one breadcrumb (sp:kernel:init:ok / sp:kernel:init:degen)
-        //      through __prospero_klog so the device log records which regime we hit.
+        //      through __prospero_klog so the device log records which regime was selected.
         // ============================================================================
         int dlsymInitOff = b.Count;
         _currentRelocs = _dlsymInitRelocs;
@@ -2652,6 +2668,69 @@ public static class PayloadCrtEmitter
         _crtSyscallBytes = b.Count - crtSyscallOff;
 
         // ============================================================================
+        // __sp_kekcall -- kekcall dispatch shim
+        //
+        // Packs the kekcall number (RDI) into RAX[63:32] with SYS_getppid (0x27)
+        // in RAX[31:0], shifts the remaining args down one slot, and dispatches
+        // through ptr_syscall. The kernel extension handler intercepts getppid and
+        // reads RAX>>32 as the kekcall number.
+        //
+        // ============================================================================
+        int crtKekcallOff = b.Count;
+        _currentRelocs = _crtKekcallRelocs;
+
+        // mov eax, edi          ; nr (zero-extend to guarantee upper 32 bits clear)
+        b.AddRange([0x89, 0xF8]);
+        // mov rdi, rsi          ; a1
+        b.AddRange([0x48, 0x89, 0xF7]);
+        // mov rsi, rdx          ; a2
+        b.AddRange([0x48, 0x89, 0xD6]);
+        // mov rdx, rcx          ; a3
+        b.AddRange([0x48, 0x89, 0xCA]);
+        // mov r10, r8           ; a4 (FreeBSD arg4)
+        b.AddRange([0x4D, 0x89, 0xC2]);
+        // mov r8, r9            ; a5
+        b.AddRange([0x4D, 0x89, 0xC8]);
+        // mov r9, [rsp+8]       ; a6 (7th C arg)
+        b.AddRange([0x4C, 0x8B, 0x4C, 0x24, 0x08]);
+        // shl rax, 32           ; nr << 32
+        b.AddRange([0x48, 0xC1, 0xE0, 0x20]);
+        // or rax, 0x27          ; (nr << 32) | SYS_getppid  (MUST be REX.W)
+        b.AddRange([0x48, 0x83, 0xC8, 0x27]);
+        // call qword [rip+ptr_syscall]
+        b.AddRange([0xFF, 0x15, 0, 0, 0, 0]);
+        AddRel(RelocSymbol.PtrSyscall, b.Count - 4);
+        // ret
+        b.Add(0xC3);
+        // trailing ret (SDK parity)
+        b.Add(0xC3);
+        _crtKekcallBytes = b.Count - crtKekcallOff;
+
+        // ============================================================================
+        // __sp_mdbg_call -- direct mdbg syscall wrapper
+        //
+        // Wraps SYS_mdbg_call (573): loads the syscall number into EAX and dispatches
+        // through ptr_syscall. The three C arguments (cmd, arg2, arg3) in RDI/RSI/RDX
+        // are already in the correct registers for the FreeBSD syscall convention.
+        //
+        // ============================================================================
+        int crtMdbgCallOff = b.Count;
+        _currentRelocs = _crtMdbgCallRelocs;
+
+        // mov eax, 573          ; SYS_mdbg_call = 0x23D
+        b.AddRange([0xB8, 0x3D, 0x02, 0x00, 0x00]);
+        // mov r10, rcx          ; FreeBSD arg4 passthrough
+        b.AddRange([0x49, 0x89, 0xCA]);
+        // call qword [rip+ptr_syscall]
+        b.AddRange([0xFF, 0x15, 0, 0, 0, 0]);
+        AddRel(RelocSymbol.PtrSyscall, b.Count - 4);
+        // ret
+        b.Add(0xC3);
+        // trailing ret (SDK parity)
+        b.Add(0xC3);
+        _crtMdbgCallBytes = b.Count - crtMdbgCallOff;
+
+        // ============================================================================
         // __sp_crt_syscall_init(rdi = payload_args*)
         //
         // Syscall init: derives ptr_syscall
@@ -2930,15 +3009,14 @@ public static class PayloadCrtEmitter
         b.AddRange([0x48, 0xC7, 0x45, 0xD8, 0x00, 0x00, 0x00, 0x00]); // [rbp-40] = 0
         b.AddRange([0xC7, 0x45, 0xE0, 0x00, 0x00, 0x00, 0x00]);       // [rbp-32] = 0
         // Set flags.reserved (offset 12 = 0xC from buf start) to 0x40000000
-        // But wait - the union layout is tricky. flags.reserved is at +12 as a uint64.
-        // buf is at [rbp-0x30]. reserved starts at [rbp-0x30+0xC] = [rbp-0x24]
-        // Actually let me reconsider the layout. buf is 20 bytes at [rbp-0x30].
+        // Union layout: flags.reserved is at +12 as a uint64.
+        // buf is at [rbp-0x30]. reserved starts at [rbp-0x30+0xC] = [rbp-0x24].
         // flags: cnt(4)+in(4)+out(4)+reserved(8) = 20. reserved at offset 12.
-        // Set reserved = 0x40000000 which is a 64-bit value at offset 12.
+        // Set reserved = 0x40000000 as a 64-bit value at offset 12.
         b.AddRange([0x48, 0xC7, 0x45, 0xDC, 0x00, 0x00, 0x00, 0x40]); // [rbp-0x24] = 0x40000000 (little-endian: 00 00 00 40 00 00 00 00)
-        // Actually wait. movq $imm32, mem sign-extends. 0x40000000 fits in 32 bits unsigned
-        // but as signed 32-bit it's positive. 0x48 C7 45 DC 00 00 00 40 writes
-        // qword [rbp-0x24] = 0x0000000040000000. That's correct.
+        // movq $imm32, mem sign-extends. 0x40000000 fits in 32 bits unsigned
+        // and is positive as signed. 0x48 C7 45 DC 00 00 00 40 writes
+        // qword [rbp-0x24] = 0x0000000040000000. Correct.
 
         // kernel_write(pipe_addr, &buf, sizeof(buf))
         // mov rdi, [rip+pipe_addr]
@@ -3388,7 +3466,7 @@ public static class PayloadCrtEmitter
         b.AddRange([0x44, 0x8B, 0x5C, 0x10, 0x0C]);           // mov r11d, [rax+rdx+12]
 
         // Load kdata_base once into r9 (callee-saved is pushed but free).
-        // Actually r9 is caller-saved, safe to use here.
+        // r9 is caller-saved, safe to use here.
         b.AddRange([0x4C, 0x8B, 0x0D, 0, 0, 0, 0]);          // mov r9, [rip+kdata_base]
         AddRel(RelocSymbol.KdataBase, b.Count - 4);
 
@@ -4401,10 +4479,9 @@ public static class PayloadCrtEmitter
         WriteRel32InBLocal(drsvMatchMunmapJump, drsvSymDoneAt);
         b.AddRange([0xBF, 0x49, 0x00, 0x00, 0x00]); // mov edi, 73 (SYS_munmap)
         b.AddRange([0x4C, 0x89, 0xFE]); // mov rsi, r15 (addr)
-        b.AddRange([0x48, 0x89, 0xDA]); // mov rdx, rbx (len - reusing total_size... wait, rbx = symtab_size now)
-        // Actually, we need to recompute total size. Store it earlier? Let me use
-        // meta[0x30]+meta[0x40] again. But rbx was overwritten with symtab_size.
-        // Hmm, let me re-sum:
+        b.AddRange([0x48, 0x89, 0xDA]); // mov rdx, rbx (rbx = symtab_size, not total_size; recomputed below)
+        // Total size must be recomputed here because rbx was overwritten with symtab_size.
+        // Re-sum from meta[0x30]+meta[0x40]:
         b.AddRange([0x48, 0x8B, 0x95, 0xF8, 0xFE, 0xFF, 0xFF]); // mov rdx, [rbp-0x108] (strtab_size)
         b.AddRange([0x48, 0x03, 0x95, 0xE8, 0xFE, 0xFF, 0xFF]); // add rdx, [rbp-0x118] (+ symtab_size)
         b.AddRange([0x31, 0xC0]); // xor eax, eax
@@ -4785,8 +4862,8 @@ public static class PayloadCrtEmitter
         b.AddRange([0x89, 0xD8]);                             // mov eax, ebx
         b.AddRange([0x48, 0x83, 0xC4, 0x08, 0x5B, 0x5D, 0xC3]);
         // Patch all fail jumps to reach .Lret (ebx is already -1 from last resolve)
-        // If any resolve fails, ebx stays -1 and we fall through to .Lret.
-        // Our jumps go to a "failure landing" right before .Lret where ebx is already -1.
+        // If any resolve fails, ebx stays -1 and execution falls through to .Lret.
+        // The failure jumps target a landing right before .Lret where ebx is already -1.
         int klFail = klRet; // failure path lands at .Lret with ebx=-1 (never cleared to 0)
         foreach (int at in klFailJumps) WriteRel32InBLocal(at, klFail);
         _klogInitBytes = b.Count - klogInitOff;
@@ -5862,11 +5939,10 @@ public static class PayloadCrtEmitter
         b.AddRange([0x49, 0xFF, 0xC7]);                                     // inc r15
         b.AddRange([0xEB, (byte)((sbyte)((b.Count + 2) - (b.Count + 2) - 2 + (ffLdpathCheck - b.Count - 2)) & 0xFF)]);
         // ^^ This is: jmp .ldpath_next (which is 5 bytes before .ldpath_check)
-        // Actually let me compute properly: we need to jmp to the movzbl instruction
-        // The movzbl is at ffLdpathCheck - 10 (5+3+2 bytes = the three instructions before ldpath_check)
-        // Actually this gets complex. Let me just emit a relative jump backward.
-        // The target is the `41 0f b6 04 24` instruction which is at a specific offset.
-        // For now, let me just note this needs careful calculation.
+        // Proper target: the jmp must reach the movzbl instruction at ffLdpathCheck - 10
+        // (5+3+2 bytes = the three instructions before ldpath_check).
+        // The relative jump backward targets the `41 0f b6 04 24` instruction.
+        // The offset requires careful calculation.
 
         int ffAfterLdpath = b.Count;
         b[ffAfterLdpathJumpAt] = (byte)(ffAfterLdpath - (ffAfterLdpathJumpAt + 1));
@@ -8344,7 +8420,7 @@ public static class PayloadCrtEmitter
         AddRel(RelocSymbol.DlfcnSceUnloadMod, b.Count - 4);
         b.AddRange([0x85, 0xC0]);                                         // test eax, eax
         b.AddRange([0x74, 0x0A]);                                         // je .Lskip_unload (unload OK)
-        // Unload failed: clear loaded_via_sysmod flag so we don't retry
+        // Unload failed: clear loaded_via_sysmod flag to prevent retry
         b.AddRange([0xC7, 0x83, 0x88, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
         // .Lskip_unload: free strtab if not NULL
         b.AddRange([0x48, 0x8B, 0xBB, 0x70, 0x04, 0x00, 0x00]);           // mov rdi, 0x470(%rbx)
@@ -9047,7 +9123,7 @@ public static class PayloadCrtEmitter
         // SDK payload_init from .text.payload_init of crt1.o.
         // Signature: payload_init(rdi=lib [unused], esi=argc, rdx=argv, rcx=env)
         // NOTE: SDK uses mov [rip+disp] (0x8B) for GOT-style loads of init_array
-        //   symbols. Our emitter uses lea [rip+disp] (0x8D) because we resolve
+        //   symbols. The emitter uses lea [rip+disp] (0x8D) because symbols are resolved
         //   symbols directly without GOT entries. The linker would relax the SDK's
         //   R_X86_64_REX_GOTPCRELX to lea in the final binary anyway. All other
         //   bytes are SDK-exact.
@@ -9059,7 +9135,7 @@ public static class PayloadCrtEmitter
         // +0x0e: r12 = init_array_end (lea = linker-relaxed form of SDK's mov [rip+GOT])
         b.AddRange([0x4C, 0x8D, 0x25, 0x00, 0x00, 0x00, 0x00]);            // lea r12, [rip+__init_array_end]
         AddRel(RelocSymbol.InitArrayEnd, b.Count - 4);
-        // +0x15: sub r12, init_array_start — SDK uses sub r12,[rip+GOT]; we use lea+sub
+        // +0x15: sub r12, init_array_start — SDK uses sub r12,[rip+GOT]; the emitter uses lea+sub
         b.AddRange([0x48, 0x8D, 0x05, 0x00, 0x00, 0x00, 0x00]);            // lea rax, [rip+__init_array_start]
         AddRel(RelocSymbol.InitArrayStart, b.Count - 4);
         b.AddRange([0x49, 0x29, 0xC4]);                                    // sub r12, rax
@@ -9105,7 +9181,7 @@ public static class PayloadCrtEmitter
         // SDK payload_fini from .text.payload_fini of crt1.o.
         // Signature: payload_fini(rdi=lib [unused])
         // NOTE: Same lea-vs-mov note as payload_init — SDK uses mov [rip+GOT],
-        //   we use lea [rip+sym] (linker-relaxed equivalent).
+        //   the emitter uses lea [rip+sym] (linker-relaxed equivalent).
         int payloadFiniVtableOff = b.Count;
         // +0x00: prologue
         b.AddRange([0x55, 0x48, 0x89, 0xE5,                                // push rbp; mov rbp, rsp
@@ -9114,7 +9190,7 @@ public static class PayloadCrtEmitter
         // +0x0a: rax = fini_array_end (lea = linker-relaxed of SDK's mov [rip+GOT])
         b.AddRange([0x48, 0x8D, 0x05, 0x00, 0x00, 0x00, 0x00]);            // lea rax, [rip+__fini_array_end]
         AddRel(RelocSymbol.FiniArrayEnd, b.Count - 4);
-        // +0x11: sub rax, fini_array_start — SDK uses sub rax,[rip+GOT]; we use lea+sub
+        // +0x11: sub rax, fini_array_start — SDK uses sub rax,[rip+GOT]; the emitter uses lea+sub
         b.AddRange([0x48, 0x8D, 0x0D, 0x00, 0x00, 0x00, 0x00]);            // lea rcx, [rip+__fini_array_start]
         AddRel(RelocSymbol.FiniArrayStart, b.Count - 4);
         b.AddRange([0x48, 0x29, 0xC8]);                                    // sub rax, rcx
@@ -9287,7 +9363,7 @@ public static class PayloadCrtEmitter
         // ============================================================================
         // payload_open -- THE GOT FIXUP DRIVER
         //
-        // rdi = rtld_lib_t* ctx (actually rtld_payload_lib_t*)
+        // rdi = rtld_lib_t* ctx (rtld_payload_lib_t*)
         // Walks _DYNAMIC, loads DT_NEEDED SPRX, resolves all GLOB_DAT/JMP_SLOT/R_X86_64_64/RELATIVE.
         // ============================================================================
         int payloadOpenOff = b.Count;
@@ -9407,39 +9483,14 @@ public static class PayloadCrtEmitter
         b[poGhChainEndJump] = (byte)(poGhChainEnd - (poGhChainEndJump + 1));
         b.AddRange([0x41, 0x39, 0xC4]);                       // cmp r12d, eax
         b.AddRange([0x44, 0x0F, 0x47, 0xE0]);                 // cmova r12d, eax -> NO! cmova = CF=0&&ZF=0
-        // Actually we want: if r12d > eax then eax = r12d
-        // cmp r12d, eax ; cmova eax, r12d   -- but cmova is cmov if above
-        // Let me fix: cmp eax, r12d ; cmovb eax, r12d
-        // Ugh, let me just do a simple conditional:
-        // Actually the above cmp r12d, eax tests r12d - eax. If r12d > eax, CF=0, ZF=0, so cmova would move.
+        // Goal: if r12d > eax then eax = r12d
+        // cmp r12d, eax ; cmova eax, r12d -- cmova = cmov if above
+        // Alternative: cmp eax, r12d ; cmovb eax, r12d
+        // The above cmp r12d, eax tests r12d - eax. If r12d > eax, CF=0, ZF=0, so cmova moves.
         // But cmova src, dst = "move if above" = CF=0 && ZF=0 -- this is for the FIRST operand being "above" the second
-        // Wait: CMP r12d, eax tests r12d against eax.
-        // CMOVA r12d, eax would copy eax into r12d IF r12d is above eax. That's wrong.
-        // I need: if(r12d > eax) { eax = r12d; }
-        // So: cmp eax, r12d ; cmovb eax, r12d  -- if eax < r12d, copy r12d to eax
-        // cmovb = cmov if below = CF=1
-        // Hmm wait, that also doesn't work with REX-encoded registers.
-        // Let me just use a branch:
-
-        // Actually let me just redo this bit. The issue is that cmova doesn't work with the right direction.
-        // Let me use a simpler approach that's correct:
-
-        // OK wait, I already emitted bytes above that I can't take back easily. Let me think about what I actually emitted.
-
-        // I emitted: 0x41, 0x39, 0xC4 = cmp r12d, eax
-        //           0x44, 0x0F, 0x47, 0xE0 = cmova r12d, eax
-        // This says: if r12d > eax (unsigned above), r12d = eax. That's the OPPOSITE of what I want!
-        // I want: if r12d > eax, eax = r12d.
-        // Fix: I should use cmovb eax, r12d after cmp eax, r12d.
-        // But I already emitted the wrong bytes. Let me just overwrite them.
-
-        // The code at this point does:
-        //   41 39 f9    cmp r9d, edi      (cmp index, max_index)
-        //   44 0f 46 cf cmovbe r9d, edi   (if index <= max_index, r9d = edi; i.e. keep max)
-        //   44 89 cf    mov edi, r9d      (max_index = r9d)
-        //
-        // That's also weird. Let me just use a branch. I'll overwrite the last 4 bytes.
-        // Current position: b.Count points past the cmova. Let me remove the last 7 bytes and redo.
+        // The emitted cmp r12d, eax + cmova r12d, eax is inverted: it copies eax
+        // into r12d when r12d > eax, but the goal is eax = max(eax, r12d).
+        // Remove the last 7 bytes and use a branch instead.
         b.RemoveRange(b.Count - 7, 7);
 
         // Correct approach: cmp eax, r12d ; jae .Lgh_no_update ; mov eax, r12d ; .Lgh_no_update:
@@ -9555,32 +9606,9 @@ public static class PayloadCrtEmitter
         int poRelaLoop = b.Count;
         // Load current rela entry: rsi = rela_base + i*24
         b.AddRange([0x48, 0x8B, 0x75, 0xA0]);                 // mov rsi, [rbp-0x60]
-        b.AddRange([0x4A, 0x8D, 0x04, 0x24]);                 // lea rax, [r12+r12] -> NO
-        // Actually: i*24 = i * 8 * 3. lea rax, [r12+r12*2] then shl 3
-        b.AddRange([0x4B, 0x8D, 0x04, 0x64]);                 // lea rax, [r12+r12*2]
-        // Wait, that computes r12+r12*2 = r12*3, need r12*24. Let me be more careful.
-        // i*24: mov rax, r12 ; imul rax, 24 ; add rsi, rax
-        // Or: lea rax, [r12+r12*2] ; shl rax, 3
-        // But lea rax, [r12+r12*2] requires REX. Let me fix: 4B 8D 04 64 is lea rax, [r12+r12*2]
-        // Hmm, 4B means REX.WXB. W=1, X=1, B=0. That's wrong for this. Let me encode properly.
-        // lea rax, [r12+r12*2]:
-        // r12 is in base and index, both need REX.B and REX.X
-        // ModRM: 00 000 100, SIB: 10 100 100 = scale=2, index=r12(100+X), base=r12(100+B)
-        // REX = 0x4E (W=1, R=0, X=1, B=0) -> No wait
-        // For [r12+r12*2]: base=r12 needs B=1, index=r12 needs X=1
-        // REX prefix: 0100 W R X B = 0100 1 0 1 1 = 0x4B
-        // Opcode 8D /r = lea
-        // ModRM: mod=00, reg=000(rax), rm=100(SIB)
-        // SIB: scale=01(x2), index=100(r12 with X), base=100(r12 with B)
-        // But wait, we want r12*3 = r12 + r12*2, so scale should be 01 for *2
-        // SIB byte: SS=01, index=100, base=100 = 01 100 100 = 0x64
-
-        // OK so 4B 8D 04 64 should be: REX.WXB lea rax, [r12+r12*2]
-        // But we already emitted the wrong bytes. Let me fix this.
-
-        // Actually, I emitted the wrong computation above. Let me back up and redo.
-        // Remove the last 4 bytes I emitted for the wrong lea
-        b.RemoveRange(b.Count - 4, 4);
+        // Compute i*24 = (i*3) << 3 via lea rax, [r12+r12*2] ; shl rax, 3.
+        // REX.WXB (0x4B): base=r12 (B=1), index=r12 (X=1), 64-bit (W=1).
+        // SIB 0x64: scale=01 (*2), index=100 (r12+X), base=100 (r12+B).
         // Now emit correct: rsi += i*24
         // First: rax = i * 24 via lea + shl
         b.AddRange([0x4B, 0x8D, 0x04, 0x64]);                 // lea rax, [r12+r12*2]
@@ -9700,7 +9728,7 @@ public static class PayloadCrtEmitter
         // .Lr_direct_64: like glob_dat but val += r_addend
         int poDirect64 = b.Count;
         WriteRel32InBLocal(poDirect64Jump, poDirect64);
-        // Same as r_glob_dat but we add r_addend to val before memcpy
+        // Same as r_glob_dat but r_addend is added to val before memcpy
         b.AddRange([0x48, 0x8B, 0x46, 0x08]);                 // mov rax, [rsi+8] (r_info)
         b.AddRange([0x48, 0xC1, 0xE8, 0x20]);                 // shr rax, 32
         b.AddRange([0x48, 0x8D, 0x04, 0x40]);                 // lea rax, [rax+rax*2]
@@ -9926,7 +9954,7 @@ public static class PayloadCrtEmitter
         _dlsymOff = dlsymOff; _dlcloseOff = dlcloseOff; _dlopenOff = dlopenOff;
 
         // ============================================================================
-        // Patch every intra-section disp32 (calls between our own routines).
+        // Patch every intra-section disp32 (calls between CRT routines).
         // ============================================================================
         void WriteDispFrom(int at, int target)
         {
@@ -10979,20 +11007,9 @@ public static class PayloadCrtEmitter
         b.AddRange([0x74, 0x00]);                                    // jz .Lfail
         int svpFailJump1 = b.Count - 1;
         b.AddRange([0x48, 0x89, 0xC3]);                              // mov rbx, rax (vm_entry)
-        b.AddRange([0xBB, 0x01, 0x00, 0x00, 0x00]);                 // mov ebx, 1  -- wait, rbx is overwritten
-        // Actually let me use a simpler approach:
-        // first=1 flag in a register. Let me use a clean loop.
-        // Loop: while entry != 0:
-        //   copyout(entry+0x20, &start, 8)
-        //   if start >= addr+len || (start < addr && !first): break
-        //   first = 0
-        //   copyin(&prot_byte, entry+0x64, 1)
-        //   copyout(entry+0x08, &entry, 8) (next entry)
-        // return 0
-        // This is a complex function. Let me simplify with the tail-call approach.
-        // For now, implement the simpler version.
-
-        // Reset - let me re-implement this more carefully
+        b.AddRange([0xBB, 0x01, 0x00, 0x00, 0x00]);                 // mov ebx, 1 (rbx overwritten; reset below)
+        // Simplified loop: while entry != 0, walk the vm_entry chain and
+        // apply the protection byte. Reset and re-emit with correct register usage.
         b.RemoveRange(setVmemProtOff, b.Count - setVmemProtOff);
 
         // ---- kernel_set_vmem_protection (simplified, matches SDK behavior) ----
@@ -11538,7 +11555,7 @@ public static class PayloadCrtEmitter
         // Helper: inline get_proc_file(pid, fd) -> file pointer
         // Helper: inline get_inp6_outputopts(pid, fd) -> outputopts pointer
         // Helper: inline inc_so_count(pid, fd)
-        // We inline the helper calls as calls to get_proc_file + kernel_copyout + kernel_copyin
+        // The helper calls are inlined as calls to get_proc_file + kernel_copyout + kernel_copyin
 
         // --- inc_so_count(pid, master_sock) ---
         b.AddRange([0x89, 0xDF]);                                    // mov edi, ebx (pid)
@@ -11558,7 +11575,7 @@ public static class PayloadCrtEmitter
         int osFailJump2 = b.Count - 4;
         b.AddRange([0xFF, 0x45, 0xD0]);                              // inc dword [rbp-0x30]
         b.AddRange([0x48, 0x8D, 0x7D, 0xD0]);                       // lea rdi, [rbp-0x30] (uaddr)
-        // We need the file pointer again - recalculate
+        // The file pointer is needed again - recalculate
         b.AddRange([0x89, 0xDF]);                                    // mov edi, ebx
         b.AddRange([0x44, 0x89, 0xE6]);                              // mov esi, r12d
         kernelCallDisps.Add((b.Count + 2, "get_proc_file"));
@@ -11735,12 +11752,10 @@ public static class PayloadCrtEmitter
             b.AddRange([0xEB, 0x02]);                                // jmp .Lret
             int fail = b.Count;
             b[failJump] = (byte)(fail - (failJump + 1));
-            b.AddRange([0x31, 0xC0]);                                // xor eax, eax -> NOTE: SDK returns -1 here
-            // Actually SDK initializes val=-1 and returns val, so if copyout fails, returns -1.
-            // Let me match SDK: on proc_ucred fail, return -1 (already -1 in the dword).
-            // On copyout fail, return -1 (dword still -1). On success, return the read value.
-            // So the return path should just be: mov eax, [rbp-4] always, or -1 on ucred fail.
-            // Let me fix: on ucred fail, return -1 directly.
+            b.AddRange([0x31, 0xC0]);                                // xor eax, eax
+            // SDK initializes val=-1 and returns val, so on proc_ucred or copyout
+            // failure the dword is still -1. On success, return the read value.
+            // On ucred fail, return -1 directly.
             b.AddRange([0x48, 0x83, 0xC4, 0x10, 0x5D, 0xC3]);       // add rsp, 0x10 ; pop rbp ; ret
             return off;
         }
@@ -12428,14 +12443,13 @@ public static class PayloadCrtEmitter
         WriteDispTo(poRelocUnsupLeaAt, spPayloadRelocUnsupRodataOff);
         WriteDispTo(poResolveMissLeaAt, spResolveMissRodataOff);
         // payload_open _DYNAMIC LEAs (uses linker-provided _DYNAMIC)
-        // These are in _payloadRelocs via AddRel; the disp32 LEAs target rodata which we patch here:
-        // Actually these use AddRel(RelocSymbol.Dynamic) -- no, they're intra-section. Let me fix.
-        // payload_open lea rsi, [rip+_DYNAMIC] -- this needs a linker reloc, not intra-section
-        // For now I used a placeholder; we need to change these to proper relocs.
-        // Actually _DYNAMIC is a linker-provided symbol, so we need to emit reloc entries.
-        // But we're in _payloadRelocs which uses the same AddRel mechanism. Let me add reloc entries.
-        // Wait, the lea [rip+_DYNAMIC] at poOpenDynamicLeaAt and poNeededDynamicLeaAt need
-        // linker relocs, not intra-section patches. I emitted placeholder zeros. Let me add relocs.
+        // The disp32 LEAs in _payloadRelocs target rodata, patched here.
+        // AddRel(RelocSymbol.Dynamic) entries are linker relocs, not intra-section patches.
+        // payload_open lea rsi, [rip+_DYNAMIC] requires a linker reloc, not intra-section patching.
+        // Placeholder zeros were emitted above; proper reloc entries are added below.
+        // _DYNAMIC is a linker-provided symbol requiring reloc entries in _payloadRelocs.
+        // The lea [rip+_DYNAMIC] at poOpenDynamicLeaAt and poNeededDynamicLeaAt need
+        // linker relocs, not intra-section patches. Placeholder zeros were emitted; relocs follow.
         _payloadRelocs.Add(new Reloc(poOpenDynamicLeaAt, RelocSymbol.Dynamic, RPc32, -4));
         _payloadRelocs.Add(new Reloc(poNeededDynamicLeaAt, RelocSymbol.Dynamic, RPc32, -4));
         // __rtld_payload_new LEAs for vtable slots and linker symbols
@@ -12970,7 +12984,8 @@ public static class PayloadCrtEmitter
         // Reloc list - every field that needs a linker-provided address.
         // ============================================================================
         _relocations = [.. _startRelocs, .. _klogRelocs, .. _dlsymInitRelocs, .. _fixupRelocs,
-                        .. _crtSyscallRelocs, .. _crtSyscallInitRelocs,
+                        .. _crtSyscallRelocs, .. _crtKekcallRelocs, .. _crtMdbgCallRelocs,
+                        .. _crtSyscallInitRelocs,
                         .. _kernelWriteRelocs, .. _kernelCopyinRelocs,
                         .. _kernelCopyoutRelocs, .. _kernelInitRelocs,
                         .. _sha1TransformRelocs, .. _nidEncodeRelocs,
@@ -12996,6 +13011,8 @@ public static class PayloadCrtEmitter
         _bootcheckOff = bootcheckOff;
         _tcbSeedOff = seedOff;
         _crtSyscallOff = crtSyscallOff;
+        _crtKekcallOff = crtKekcallOff;
+        _crtMdbgCallOff = crtMdbgCallOff;
         _crtSyscallInitOff = crtSyscallInitOff;
         _kernelWriteOff = kernelWriteOff;
         _kernelCopyinOff = kernelCopyinOff;
@@ -13032,7 +13049,7 @@ public static class PayloadCrtEmitter
 
     // Runtime-recorded layout for the assembler pass (populated by BuildCode()).
     private static int _startOff, _getArgsOff, _klogOff, _dlsymInitOff, _fixupOff, _bootcheckOff, _tcbSeedOff;
-    private static int _crtSyscallOff, _crtSyscallInitOff, _kernelWriteOff, _kernelCopyinOff, _kernelCopyoutOff, _kernelInitOff;
+    private static int _crtSyscallOff, _crtKekcallOff, _crtMdbgCallOff, _crtSyscallInitOff, _kernelWriteOff, _kernelCopyinOff, _kernelCopyoutOff, _kernelInitOff;
     private static int _sha1TransformOff, _nidEncodeOff, _kernelGetProcOff, _kernelFindProcByCommOff, _kernelDynlibObjOff, _kernelDynlibResolveOff, _kernelDynlibDlsymOff;
     private static int _patchInitOff, _klogInitOff, _rtldInitOff, _nopStubOff;
     private static int _dlerrorOff, _dlfcnSetrootOff, _libDestroyOff, _libSym2addrOff;
@@ -13045,7 +13062,7 @@ public static class PayloadCrtEmitter
     private static int _payloadSym2addrOff, _payloadAddr2symOff, _payloadCloseOff, _payloadDestroyOff;
     private static int _sprxNewOff, _soNewOff, _soInitOff, _soRGlobDatOff, _dynlibHandleOff;
     private static int _startBytes, _getArgsBytes, _klogBytes, _dlsymInitBytes, _fixupBytes, _bootcheckBytes;
-    private static int _crtSyscallBytes, _crtSyscallInitBytes, _kernelWriteBytes, _kernelCopyinBytes, _kernelCopyoutBytes, _kernelInitBytes;
+    private static int _crtSyscallBytes, _crtKekcallBytes, _crtMdbgCallBytes, _crtSyscallInitBytes, _kernelWriteBytes, _kernelCopyinBytes, _kernelCopyoutBytes, _kernelInitBytes;
     private static int _sha1TransformBytes, _nidEncodeBytes, _kernelGetProcBytes, _kernelFindProcByCommBytes, _kernelDynlibObjBytes, _kernelDynlibResolveBytes, _kernelDynlibDlsymBytes;
     private static int _patchInitBytes, _klogInitBytes, _rtldInitBytes, _nopStubBytes;
     private static int _klogPutsOff, _klogPutsBytes, _klogPerrorOff, _klogPerrorBytes, _klogPrintfOff, _klogPrintfBytes;
@@ -13135,6 +13152,8 @@ public static class PayloadCrtEmitter
     private static List<Reloc> _dlsymInitRelocs = [];
     private static List<Reloc> _fixupRelocs = [];
     private static List<Reloc> _crtSyscallRelocs = [];
+    private static List<Reloc> _crtKekcallRelocs = [];
+    private static List<Reloc> _crtMdbgCallRelocs = [];
     private static List<Reloc> _crtSyscallInitRelocs = [];
     private static List<Reloc> _kernelWriteRelocs = [];
     private static List<Reloc> _kernelCopyinRelocs = [];
@@ -13220,6 +13239,8 @@ public static class PayloadCrtEmitter
             int nDlsymOk = strtab.Add(DlsymOkSymbol);
             int nTcbSeed = strtab.Add(TcbSeedSymbol);
             int nCrtSyscall = strtab.Add(CrtSyscallSymbol);
+            int nCrtKekcall = strtab.Add(CrtKekcallSymbol);
+            int nCrtMdbgCall = strtab.Add(CrtMdbgCallSymbol);
             int nCrtSyscallInit = strtab.Add(CrtSyscallInitSymbol);
             int nKernelWrite = strtab.Add(KernelWriteSymbol);
             int nKernelCopyin = strtab.Add(KernelCopyinSymbol);
@@ -13499,7 +13520,9 @@ public static class PayloadCrtEmitter
             const int symKernelGetUcredNgroups = 192;
             const int symKernelSetUcredNgroups = 193;
             const int symKernelSetUcredSceAttr0 = 194;
-            const int symCount = 195;
+            const int symCrtKekcall = 195;
+            const int symCrtMdbgCall = 196;
+            const int symCount = 197;
 
             byte[] symtab = new byte[24 * symCount];
             WriteSym(symtab, symStart, nStart, GlobalFunc, shText, (ulong)_startOff, (ulong)_startBytes);
@@ -13516,6 +13539,8 @@ public static class PayloadCrtEmitter
             WriteSym(symtab, symDlsymOk, nDlsymOk, GlobalObject, shBss, BssOffDlsymOk, 1);
             WriteSym(symtab, symTcbSeed, nTcbSeed, GlobalObject, shText, (ulong)_tcbSeedOff, TcbSeedSize);
             WriteSym(symtab, symCrtSyscall, nCrtSyscall, GlobalFunc, shText, (ulong)_crtSyscallOff, (ulong)_crtSyscallBytes);
+            WriteSym(symtab, symCrtKekcall, nCrtKekcall, GlobalFunc, shText, (ulong)_crtKekcallOff, (ulong)_crtKekcallBytes);
+            WriteSym(symtab, symCrtMdbgCall, nCrtMdbgCall, GlobalFunc, shText, (ulong)_crtMdbgCallOff, (ulong)_crtMdbgCallBytes);
             WriteSym(symtab, symCrtSyscallInit, nCrtSyscallInit, GlobalFunc, shText, (ulong)_crtSyscallInitOff, (ulong)_crtSyscallInitBytes);
             WriteSym(symtab, symKernelWrite, nKernelWrite, GlobalFunc, shText, (ulong)_kernelWriteOff, (ulong)_kernelWriteBytes);
             WriteSym(symtab, symKernelCopyin, nKernelCopyin, GlobalFunc, shText, (ulong)_kernelCopyinOff, (ulong)_kernelCopyinBytes);

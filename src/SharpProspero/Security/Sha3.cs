@@ -149,6 +149,58 @@ public sealed class Sha3 : HashAlgorithm
     public static string HashFileHex(string path, Sha3Variant variant = Sha3Variant.Bits256)
         => Convert.ToHexStringLower(HashFile(path, variant));
 
+    /// <summary>
+    /// Computes the SHA3-256 digest of <paramref name="input"/> into <paramref name="output"/>
+    /// without any heap allocation. Suitable for kernel-context payloads where the GC is
+    /// unavailable. The output span must hold at least 32 bytes.
+    /// </summary>
+    /// <param name="input">The message to hash.</param>
+    /// <param name="output">Destination buffer, at least 32 bytes.</param>
+    /// <exception cref="ArgumentException"><paramref name="output"/> is shorter than 32 bytes.</exception>
+    public static void Hash(ReadOnlySpan<byte> input, Span<byte> output)
+    {
+        if (output.Length < 32)
+            throw new ArgumentException("Output buffer must be at least 32 bytes.", nameof(output));
+
+        const int rate = 136; // SHA3-256: (1600 - 2*256) / 8
+
+        Span<ulong> state = stackalloc ulong[25];
+        state.Clear();
+
+        int offset = 0;
+        int remaining = input.Length;
+
+        // Absorb full rate-sized blocks.
+        while (remaining >= rate)
+        {
+            AbsorbInto(state, input.Slice(offset, rate), rate);
+            offset += rate;
+            remaining -= rate;
+        }
+
+        // Pad and absorb the final partial block.
+        Span<byte> pad = stackalloc byte[rate];
+        pad.Clear();
+        input.Slice(offset, remaining).CopyTo(pad);
+        pad[remaining] = 0x06;
+        pad[rate - 1] |= 0x80;
+        AbsorbInto(state, pad, rate);
+
+        // Squeeze: 32 bytes = 4 lanes, always fits in one rate block.
+        BinaryPrimitives.WriteUInt64LittleEndian(output, state[0]);
+        BinaryPrimitives.WriteUInt64LittleEndian(output[8..], state[1]);
+        BinaryPrimitives.WriteUInt64LittleEndian(output[16..], state[2]);
+        BinaryPrimitives.WriteUInt64LittleEndian(output[24..], state[3]);
+    }
+
+    // XOR a block into the state and permute; used by the zero-allocation path.
+    private static void AbsorbInto(Span<ulong> state, ReadOnlySpan<byte> block, int rate)
+    {
+        for (int i = 0; i < rate / 8; i++)
+            state[i] ^= BinaryPrimitives.ReadUInt64LittleEndian(block.Slice(i * 8, 8));
+        KeccakF1600(state);
+    }
+
     private void AbsorbBlock(ReadOnlySpan<byte> block)
     {
         for (int i = 0; i < _rate / 8; i++)
@@ -156,7 +208,7 @@ public sealed class Sha3 : HashAlgorithm
         KeccakF1600(_state);
     }
 
-    private static void KeccakF1600(ulong[] a)
+    private static void KeccakF1600(Span<ulong> a)
     {
         Span<ulong> c = stackalloc ulong[5];
         Span<ulong> d = stackalloc ulong[5];
@@ -192,4 +244,19 @@ public sealed class Sha3 : HashAlgorithm
             a[0] ^= RoundConstants[round];
         }
     }
+
+    // Verification against NIST test vectors (SHA3-256):
+    //
+    //   Input: "" (empty)
+    //   Expected: a7ffc6f8bf1ed76651c14756a061d662f580ff4de43b49fa82d80a4b80f8434a
+    //
+    //   Input: "abc" (0x61 0x62 0x63)
+    //   Expected: 3a985da74fe225b2045c172d6bd390bd855f086e3e9d525b46bfe24511431532
+    //
+    //   Span<byte> digest = stackalloc byte[32];
+    //   Sha3.Hash(ReadOnlySpan<byte>.Empty, digest);
+    //   // digest == a7ffc6f8...
+    //
+    //   Sha3.Hash("abc"u8, digest);
+    //   // digest == 3a985da7...
 }

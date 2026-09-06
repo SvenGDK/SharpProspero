@@ -40,7 +40,7 @@ public static unsafe class PayloadImageMount
     /// Used for UFS and exFAT images.
     /// </summary>
     /// <returns>The assigned unit number on success, or -1 on error.</returns>
-    public static int MdAttach(byte* imagePath, uint sectorSize, bool readOnly)
+    public static int MdAttach(byte* imagePath, uint sectorSize, bool readOnly, ulong mediaSize)
     {
         byte* devPath = stackalloc byte[] {
             (byte)'/', (byte)'d', (byte)'e', (byte)'v', (byte)'/',
@@ -53,6 +53,7 @@ public static unsafe class PayloadImageMount
         md.Version = 0;
         md.Type = DeviceControl.MdVnode;
         md.File = imagePath;
+        md.Mediasize = mediaSize;
         md.Sectorsize = sectorSize;
         md.Options = DeviceControl.MdAutounit | (readOnly ? DeviceControl.MdReadonly : 0u);
 
@@ -160,6 +161,104 @@ public static unsafe class PayloadImageMount
 
         PayloadFileSystem.closedir(dir);
         return found;
+    }
+
+    /// <summary>
+    /// Force-unmounts a UFS mount point and detaches all /dev/md devices (0-15).
+    /// </summary>
+    public static void UnmountUfs(byte* mountPoint)
+    {
+        if (mountPoint == null || *mountPoint == 0) return;
+
+        FreeBsdStatfs sfs = default;
+        if (PayloadMount.statfs(mountPoint, &sfs) == 0)
+        {
+            byte* ufsName = stackalloc byte[] { (byte)'u', (byte)'f', (byte)'s', 0 };
+            if (FixedBytesEqual(sfs.f_fstypename, ufsName, 3))
+                PayloadMount.unmount(mountPoint, PayloadMount.MntForce);
+        }
+
+        byte* devBuf = stackalloc byte[32];
+        byte* mdPrefix = stackalloc byte[] {
+            (byte)'/', (byte)'d', (byte)'e', (byte)'v', (byte)'/',
+            (byte)'m', (byte)'d', 0 };
+        for (int i = 0; i < 16; i++)
+        {
+            int pos = 0;
+            byte* p = mdPrefix;
+            while (*p != 0) devBuf[pos++] = *p++;
+            WriteInt(devBuf, ref pos, i);
+            devBuf[pos] = 0;
+
+            if (PayloadFileSystem.access(devBuf, PayloadFileSystem.F_OK) == 0)
+                MdDetach(i);
+        }
+
+        PayloadFileSystem.rmdir(mountPoint);
+    }
+
+    /// <summary>
+    /// Force-unmounts an exFAT mount point and detaches all /dev/lvd (0-15) and
+    /// /dev/md (0-15) devices.
+    /// </summary>
+    public static void UnmountExfat(byte* mountPoint)
+    {
+        if (mountPoint == null || *mountPoint == 0) return;
+
+        FreeBsdStatfs sfs = default;
+        if (PayloadMount.statfs(mountPoint, &sfs) == 0)
+        {
+            byte* exfatName = stackalloc byte[] {
+                (byte)'e', (byte)'x', (byte)'f', (byte)'a', (byte)'t', (byte)'f', (byte)'s', 0 };
+            if (FixedBytesEqual(sfs.f_fstypename, exfatName, 7))
+                PayloadMount.unmount(mountPoint, PayloadMount.MntForce);
+        }
+
+        byte* devBuf = stackalloc byte[32];
+        byte* lvdPrefix = stackalloc byte[] {
+            (byte)'/', (byte)'d', (byte)'e', (byte)'v', (byte)'/',
+            (byte)'l', (byte)'v', (byte)'d', 0 };
+        for (int i = 0; i < 16; i++)
+        {
+            int pos = 0;
+            byte* p = lvdPrefix;
+            while (*p != 0) devBuf[pos++] = *p++;
+            WriteInt(devBuf, ref pos, i);
+            devBuf[pos] = 0;
+
+            if (PayloadFileSystem.access(devBuf, PayloadFileSystem.F_OK) == 0)
+                LvdDetach(i);
+        }
+
+        byte* mdPrefix = stackalloc byte[] {
+            (byte)'/', (byte)'d', (byte)'e', (byte)'v', (byte)'/',
+            (byte)'m', (byte)'d', 0 };
+        for (int i = 0; i < 16; i++)
+        {
+            int pos = 0;
+            byte* p = mdPrefix;
+            while (*p != 0) devBuf[pos++] = *p++;
+            WriteInt(devBuf, ref pos, i);
+            devBuf[pos] = 0;
+
+            if (PayloadFileSystem.access(devBuf, PayloadFileSystem.F_OK) == 0)
+                MdDetach(i);
+        }
+
+        PayloadFileSystem.rmdir(mountPoint);
+    }
+
+    private static bool FixedBytesEqual(byte* a, byte* b, int len)
+    {
+        for (int i = 0; i < len; i++)
+            if (a[i] != b[i]) return false;
+        return true;
+    }
+
+    private static void WriteInt(byte* buf, ref int pos, int value)
+    {
+        if (value >= 10) WriteInt(buf, ref pos, value / 10);
+        buf[pos++] = (byte)('0' + value % 10);
     }
 
     private static bool EndsWith(byte* str, int len, ReadOnlySpan<byte> suffix)

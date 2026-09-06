@@ -39,6 +39,24 @@ public sealed class Rsa2048
     }
 
     /// <summary>
+    /// Performs a raw RSA modular exponentiation: <c>message^exponent mod modulus</c>.
+    /// All three inputs and the output are 256-byte big-endian buffers.
+    /// </summary>
+    /// <param name="message">The 256-byte input block.</param>
+    /// <param name="modulus">The 256-byte RSA modulus (n).</param>
+    /// <param name="exponent">The 256-byte exponent (e or d).</param>
+    /// <param name="result">The 256-byte output buffer.</param>
+    public static void RawOp(ReadOnlySpan<byte> message, ReadOnlySpan<byte> modulus,
+        ReadOnlySpan<byte> exponent, Span<byte> result)
+    {
+        var m = new BigUint(message);
+        var n = new BigUint(modulus);
+        var e = new BigUint(exponent);
+        var r = BigUint.ModPow(BigUint.Clone(m), e, n);
+        r.ToBytes(result);
+    }
+
+    /// <summary>
     /// Performs the RSA private key operation on a 256-byte message block.
     /// </summary>
     /// <param name="message">The 256-byte input (ciphertext or hash to sign).</param>

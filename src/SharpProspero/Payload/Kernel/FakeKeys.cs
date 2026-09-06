@@ -1,38 +1,28 @@
 // SharpProspero - a C# SDK for on-device application modules.
 // Copyright (C) 2026 SvenGDK
 
-using System.Runtime.InteropServices;
+using System;
 
 namespace SharpProspero.Payload.Kernel;
 
 /// <summary>
-/// One entry in the fake-key registry within the shared area.
-/// </summary>
-[StructLayout(LayoutKind.Sequential)]
-public unsafe struct FakeKeyEntry
-{
-    /// <summary>The content identifier this key applies to.</summary>
-    public fixed byte ContentId[48];
-
-    /// <summary>The encryption key (32 bytes).</summary>
-    public fixed byte EncryptionKey[32];
-
-    /// <summary>The signing key (32 bytes).</summary>
-    public fixed byte SigningKey[32];
-
-    /// <summary>Key type flags.</summary>
-    public uint Flags;
-
-    /// <summary>Padding to align the entry.</summary>
-    public uint Padding;
-}
-
-/// <summary>
-/// Reads the shared area and manages the fake-key registry. The shared area resides
-/// at a kernel address discovered through the kernel data section.
+/// Manages the fake-key registry within the kernel shared area. Each slot holds
+/// 32 bytes of key material. Allocation uses the bitmask/ready_mask fields:
+/// a bit set in <c>Bitmask</c> means the slot is claimed; a bit set in
+/// <c>ReadyMask</c> means the slot contains valid data.
 /// </summary>
 public static unsafe class PayloadFakeKeys
 {
+    /// <summary>Byte offset of the <c>key_data</c> array from the start of the shared area
+    /// (bitmask[8] + ready_mask[8] + pad[16] = 32).</summary>
+    private const int KeyDataOffset = 32;
+
+    /// <summary>Size of each key slot in bytes.</summary>
+    private const int KeySize = KstuffSharedAreaConstants.FakeKeySize;
+
+    /// <summary>Maximum number of key slots.</summary>
+    private const int MaxSlots = KstuffSharedAreaConstants.FakeKeySlots;
+
     /// <summary>
     /// Reads the shared area header from the given kernel address.
     /// </summary>
@@ -44,37 +34,118 @@ public static unsafe class PayloadFakeKeys
     }
 
     /// <summary>
-    /// Writes a fake key entry into the shared area's key registry.
+    /// Returns the number of registered (ready) fake keys.
     /// </summary>
-    /// <param name="io">Kernel I/O for writing to the shared area.</param>
-    /// <param name="sharedAreaAddr">Base address of the shared area.</param>
-    /// <param name="index">Index of the key entry to write.</param>
-    /// <param name="entry">The key entry to write.</param>
-    public static void WriteKey(PayloadKernelIo io, ulong sharedAreaAddr,
-        int index, FakeKeyEntry* entry)
+    public static int GetKeyCount(KstuffSharedArea area)
     {
-        KstuffSharedArea area = ReadSharedArea(io, sharedAreaAddr);
-        ulong keyAddr = sharedAreaAddr + area.FakeKeyOffset + (ulong)(index * sizeof(FakeKeyEntry));
-        io.Write(keyAddr, (byte*)entry, sizeof(FakeKeyEntry));
+        return BitCount(area.ReadyMask);
     }
 
     /// <summary>
-    /// Reads a fake key entry from the shared area.
+    /// Checks whether a key slot contains valid data.
     /// </summary>
-    public static FakeKeyEntry ReadKey(PayloadKernelIo io, ulong sharedAreaAddr, int index)
+    public static bool HasFakeKey(KstuffSharedArea area, int index)
     {
-        KstuffSharedArea area = ReadSharedArea(io, sharedAreaAddr);
-        ulong keyAddr = sharedAreaAddr + area.FakeKeyOffset + (ulong)(index * sizeof(FakeKeyEntry));
-        FakeKeyEntry entry;
-        io.Read(keyAddr, (byte*)&entry, sizeof(FakeKeyEntry));
-        return entry;
+        if (index < 0 || index >= MaxSlots) return false;
+        return (area.ReadyMask & (1UL << index)) != 0;
     }
 
     /// <summary>
-    /// Sets the fake key count in the shared area header.
+    /// Registers a 32-byte fake key in the shared area by finding a free slot,
+    /// writing the key data, and setting the ready bit. Returns the slot index
+    /// or -1 if no free slot is available.
     /// </summary>
-    public static void SetKeyCount(PayloadKernelIo io, ulong sharedAreaAddr, int count)
+    public static int RegisterFakeKey(PayloadKernelIo io, ulong sharedAreaAddr,
+        ReadOnlySpan<byte> keyData)
     {
-        io.WriteU32(sharedAreaAddr + 8, (uint)count);
+        if (keyData.Length < KeySize) return -1;
+
+        // Read current bitmask to find a free slot
+        ulong bitmask = io.ReadU64(sharedAreaAddr);
+        int slot = FindFreeSlot(bitmask);
+        if (slot < 0) return -1;
+
+        ulong bit = 1UL << slot;
+
+        // Claim the slot in bitmask
+        io.WriteU64(sharedAreaAddr, bitmask | bit);
+
+        // Write key data
+        ulong keyAddr = sharedAreaAddr + KeyDataOffset + (ulong)(slot * KeySize);
+        fixed (byte* p = keyData)
+            io.Write(keyAddr, p, KeySize);
+
+        // Set the ready bit
+        ulong readyMask = io.ReadU64(sharedAreaAddr + 8);
+        io.WriteU64(sharedAreaAddr + 8, readyMask | bit);
+
+        return slot;
+    }
+
+    /// <summary>
+    /// Unregisters a fake key by clearing its ready and bitmask bits.
+    /// </summary>
+    public static void UnregisterFakeKey(PayloadKernelIo io, ulong sharedAreaAddr, int index)
+    {
+        if (index < 0 || index >= MaxSlots) return;
+        ulong bit = 1UL << index;
+
+        // Clear ready_mask first
+        ulong readyMask = io.ReadU64(sharedAreaAddr + 8);
+        io.WriteU64(sharedAreaAddr + 8, readyMask & ~bit);
+
+        // Clear bitmask
+        ulong bitmask = io.ReadU64(sharedAreaAddr);
+        io.WriteU64(sharedAreaAddr, bitmask & ~bit);
+    }
+
+    /// <summary>
+    /// Reads a 32-byte fake key from the given slot.
+    /// </summary>
+    public static void GetFakeKey(PayloadKernelIo io, ulong sharedAreaAddr,
+        int index, Span<byte> keyData)
+    {
+        if (index < 0 || index >= MaxSlots) return;
+        ulong keyAddr = sharedAreaAddr + KeyDataOffset + (ulong)(index * KeySize);
+        fixed (byte* p = keyData)
+            io.Read(keyAddr, p, KeySize);
+    }
+
+    /// <summary>
+    /// Writes a 32-byte fake key into a slot that is already allocated.
+    /// </summary>
+    public static void WriteFakeKey(PayloadKernelIo io, ulong sharedAreaAddr,
+        int index, ReadOnlySpan<byte> keyData)
+    {
+        if (index < 0 || index >= MaxSlots) return;
+        ulong keyAddr = sharedAreaAddr + KeyDataOffset + (ulong)(index * KeySize);
+        fixed (byte* p = keyData)
+            io.Write(keyAddr, p, Math.Min(keyData.Length, KeySize));
+    }
+
+    /// <summary>
+    /// Finds the first free slot index in the bitmask, or -1 if all 63 slots are taken.
+    /// </summary>
+    private static int FindFreeSlot(ulong bitmask)
+    {
+        // The bitmask uses bits 0..62 (63 slots). Find the lowest clear bit.
+        ulong available = ~bitmask & ((1UL << MaxSlots) - 1);
+        if (available == 0) return -1;
+        return TrailingZeroCount(available);
+    }
+
+    private static int BitCount(ulong v)
+    {
+        int c = 0;
+        while (v != 0) { v &= v - 1; c++; }
+        return c;
+    }
+
+    private static int TrailingZeroCount(ulong v)
+    {
+        if (v == 0) return 64;
+        int c = 0;
+        while ((v & 1) == 0) { v >>= 1; c++; }
+        return c;
     }
 }

@@ -10,11 +10,11 @@ namespace SharpProspero.Payload.Elf;
 /// </summary>
 public static class DeviceControl
 {
-    /// <summary>md(4) MDIOCATTACH ioctl number.</summary>
-    public const ulong MdiocAttach = 0xC0306D00;
+    /// <summary>md(4) MDIOCATTACH ioctl number (_IOWR('m', 0, struct md_ioctl), sizeof=444).</summary>
+    public const ulong MdiocAttach = 0xC1BC6D00;
 
-    /// <summary>md(4) MDIOCDETACH ioctl number.</summary>
-    public const ulong MdiocDetach = 0xC0306D01;
+    /// <summary>md(4) MDIOCDETACH ioctl number (_IOWR('m', 1, struct md_ioctl), sizeof=444).</summary>
+    public const ulong MdiocDetach = 0xC1BC6D01;
 
     /// <summary>LVD attach ioctl number.</summary>
     public const ulong SceLvdIocAttach = 0xC0286D00;
@@ -33,12 +33,12 @@ public static class DeviceControl
 }
 
 /// <summary>
-/// FreeBSD md(4) memory disk ioctl control structure.
+/// FreeBSD md(4) memory disk ioctl control structure (444 bytes, MDNPAD=97).
 /// </summary>
 [StructLayout(LayoutKind.Sequential)]
 public unsafe struct MdIoctl
 {
-    /// <summary>Structure version.</summary>
+    /// <summary>Structure version (MDIOVERSION=0).</summary>
     public uint Version;
 
     /// <summary>Unit number (set by MDIOCATTACH when MdAutounit is used).</summary>
@@ -46,6 +46,8 @@ public unsafe struct MdIoctl
 
     /// <summary>Disk type (<see cref="DeviceControl.MdVnode"/>).</summary>
     public int Type;
+
+    private uint _alignPad;
 
     /// <summary>Path to the backing file (NUL-terminated).</summary>
     public byte* File;
@@ -59,7 +61,17 @@ public unsafe struct MdIoctl
     /// <summary>Option flags (<see cref="DeviceControl.MdAutounit"/> | <see cref="DeviceControl.MdReadonly"/>).</summary>
     public uint Options;
 
-    private fixed byte _pad[32];
+    /// <summary>Base address for preloaded disks.</summary>
+    public ulong Base;
+
+    /// <summary>Firmware-reported heads.</summary>
+    public int FwHeads;
+
+    /// <summary>Firmware-reported sectors.</summary>
+    public int FwSectors;
+
+    /// <summary>Padding for future extensions (MDNPAD=97).</summary>
+    public fixed int Pad[97];
 }
 
 /// <summary>

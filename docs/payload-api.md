@@ -394,7 +394,7 @@ PayloadProcessMemory.Detach(pid);
 
 ```csharp
 var type = PayloadImageMount.DetectType(path);
-int unit = PayloadImageMount.MdAttach(imagePath, 512, readOnly: true);
+int unit = PayloadImageMount.MdAttach(imagePath, 512, readOnly: true, mediaSize: fileSize);
 int devId = PayloadImageMount.LvdAttach(2048, imageType, deviceSize);
 ```
 

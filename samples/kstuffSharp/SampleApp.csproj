@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <SharpProsperoRoot Condition="'$(SharpProsperoRoot)' == ''">$(SHARPPROSPERO_ROOT)</SharpProsperoRoot>
+  </PropertyGroup>
+
+  <Import Project="$(SharpProsperoRoot)\build\Prospero.Payload.props" />
+
+  <PropertyGroup>
+    <RootNamespace>SampleApp</RootNamespace>
+    <AssemblyName>SampleApp</AssemblyName>
+    <TargetFramework>net10.0</TargetFramework>
+    <LangVersion>14.0</LangVersion>
+    <Nullable>enable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="$(SharpProsperoRoot)\src\SharpProspero\SharpProspero.csproj" />
+    <ProjectReference Include="$(SharpProsperoRoot)\tools\SharpProspero.Link\SharpProspero.Link.csproj" />
+  </ItemGroup>
+
+  <Import Project="$(SharpProsperoRoot)\build\Prospero.Payload.targets" />
+
+</Project>

@@ -368,8 +368,23 @@ public static class KernelOffsets
     /// <summary>The title identifier for the running application, a ten-byte inline string.</summary>
     public const int ProcTitleId = 0x470;
 
+    /// <summary><c>p_vmspace</c>: the address space pointer (eight bytes).</summary>
+    public const int ProcVmspace = 0x200;
+
     /// <summary><c>p_comm</c>: the process name, an inline seventeen-byte array.</summary>
     public const int ProcComm = 0x5DC;
+
+    /// <summary>
+    /// Returns the byte offset of the <c>vm_pmap</c> sub-structure inside <c>struct vmspace</c>
+    /// for the given firmware version. The pmap stores the process page-table root (CR3)
+    /// at <c>pm_pml4</c> (+32) and <c>pm_cr3</c> (+40).
+    /// </summary>
+    public static int VmspacePmapOffset(uint fwMajorMinor) => fwMajorMinor switch
+    {
+        <= 0x102 => 0x2C0,
+        <= 0x550 => 0x2E0,
+        _ => 0x2E8,
+    };
 
     /// <summary><c>fd_rdir</c>: the root directory vnode in the file descriptor table.</summary>
     public const int FdRdir = 0x10;
@@ -412,6 +427,98 @@ public static class KernelOffsets
 
     /// <summary><c>pr_ref</c>: the prison reference count (four bytes).</summary>
     public const int PrisonRef = 0x14;
+
+    // ---- Thread list traversal offsets ----
+
+    /// <summary><c>p_threads.tqh_first</c>: pointer to the first thread in the process.</summary>
+    public const int ProcThreads = 0x10;
+
+    /// <summary><c>td_plist.tqe_next</c>: pointer to the next thread in the process's thread list.</summary>
+    public const int ThreadListNext = 0x10;
+
+    /// <summary><c>td_pcb</c>: pointer to the thread's process control block.</summary>
+    public const int ThreadPcb = 0x3F8;
+
+    /// <summary><c>td_proc</c>: pointer to the owning process from a thread.</summary>
+    public const int ThreadProc = 0x08;
+
+    /// <summary><c>td_retval</c>: the two-register system call return value.</summary>
+    public const int ThreadRetval = 0x408;
+
+    /// <summary><c>td_frame</c>: pointer to the user-mode trap frame saved on entry.</summary>
+    public const int ThreadFrame = 0x460;
+
+    // ---- PCB structure offsets ----
+
+    /// <summary>
+    /// Base offset of <c>pcb_dr0</c> in the PCB. The six debug register save slots
+    /// (DR0, DR1, DR2, DR3, DR6, DR7) follow contiguously at eight-byte intervals.
+    /// On firmware 10.00 and later, add the value returned by <see cref="PcbShift"/>
+    /// to obtain the actual offset.
+    /// </summary>
+    public const int PcbDr0Base = 0x78;
+
+    /// <summary>
+    /// Base offset of <c>pcb_flags</c> in the PCB. On firmware 10.00 and later, add
+    /// the value returned by <see cref="PcbShift"/> to obtain the actual offset.
+    /// </summary>
+    public const int PcbFlagsBase = 0x100;
+
+    /// <summary><c>PCB_DBREGS</c>: when set in <c>pcb_flags</c>, <c>cpu_switch</c> restores
+    /// DR0-DR3, DR6, and DR7 from the PCB save area on context switch.</summary>
+    public const uint PcbDbregsFlag = 0x02;
+
+    /// <summary>
+    /// Returns the byte shift applied to all PCB fields from <c>pcb_fsbase</c> onward
+    /// on the given firmware. Returns 16 on firmware 10.00 and later, zero otherwise.
+    /// </summary>
+    public static int PcbShift(uint firmwareVersion) =>
+        (firmwareVersion & VersionMask) >= Fw1000 ? 0x10 : 0;
+
+    /// <summary>
+    /// Base offset of <c>pcb_fsbase</c> (the FS segment base save slot) in the PCB.
+    /// On firmware 10.00 and later, add the value returned by <see cref="PcbShift"/>.
+    /// </summary>
+    public const int PcbFsBase = 0x40;
+
+    /// <summary>
+    /// Base offset of <c>pcb_gsbase</c> (the GS segment base save slot) in the PCB.
+    /// On firmware 10.00 and later, add the value returned by <see cref="PcbShift"/>.
+    /// </summary>
+    public const int PcbGsBase = 0x48;
+
+    // ---- Sysentvec structure offsets ----
+
+    /// <summary>Offset of <c>sv_table</c> within the <c>sysentvec</c> structure (pointer to the sysent array).</summary>
+    public const int SysentvecTable = 0x08;
+
+    // ---- Syscall frame offsets ----
+
+    /// <summary>
+    /// Base offset from RSP to the RSI save slot on the syscall kernel stack frame.
+    /// On firmware 10.00 and later, add the value returned by <see cref="PcbShift"/>.
+    /// </summary>
+    public const int SyscallRspToRsiBase = 0x88;
+
+    /// <summary>
+    /// Base offset from RSP to the full register stash on the syscall kernel stack frame.
+    /// On firmware 10.00 and later, add the value returned by <see cref="PcbShift"/>.
+    /// </summary>
+    public const int SyscallRspToRegsStashBase = 0x110;
+
+    // ---- Mailbox stack frame offsets ----
+
+    /// <summary>Offset from RSP to the SELF context pointer during <c>decryptSelfBlock</c> mailbox handling.</summary>
+    public const int MailboxDecryptSelfBlockRspToSelfContext = 0x118;
+
+    /// <summary>Offset from RSP to the target virtual address during <c>decryptSelfBlock</c> mailbox handling.</summary>
+    public const int MailboxDecryptSelfBlockRspToTargetVa = 0x10;
+
+    /// <summary>Offset from RSP to the saved RBP during <c>decryptSelfBlock</c> mailbox handling.</summary>
+    public const int MailboxDecryptSelfBlockRspToRbp = 0x120;
+
+    /// <summary>Size of the mini syscore header structure in bytes.</summary>
+    public const int MiniSyscoreHeaderSize = 0x6A0;
 
     // ---- Detailed per-firmware syscall table offsets ----
 
@@ -473,4 +580,232 @@ public static class KernelOffsets
         >= Fw600 => 0x9E8,
         _ => 0x9C0,
     };
+
+    // =========================================================================
+    // FW 10.01 kernel module offsets (kdata-relative, signed)
+    //
+    // Each value is a signed offset relative to KdataBase. Positive values
+    // address the kernel data segment; negative values address the kernel text
+    // segment (located below KdataBase in virtual memory). To obtain an
+    // absolute kernel virtual address: KdataBase1001 + (ulong)offset.
+    // =========================================================================
+
+    // ---- IDT/GDT/TSS/PCPU infrastructure (FW 10.01) ----
+
+    /// <summary>Kdata-relative offset of the Interrupt Descriptor Table.</summary>
+    public const long Idt_1001 = 0x2D5C300;
+
+    /// <summary>Kdata-relative offset of the per-CPU GDT array.</summary>
+    public const long GdtArray_1001 = 0x2D5D5E0;
+
+    /// <summary>Kdata-relative offset of the per-CPU TSS array.</summary>
+    public const long TssArray_1001 = 0x2D5EFE0;
+
+    /// <summary>Kdata-relative offset of the per-CPU data array.</summary>
+    public const long PcpuArray_1001 = 0x2D70F00;
+
+    // ---- Interrupt/return ROP gadgets (FW 10.01) ----
+
+    /// <summary>Kdata-relative offset of the <c>doreti_iret</c> instruction (IRET return from interrupt).</summary>
+    public const long DoretiIret_1001 = -0xA6EB13;
+
+    /// <summary>Kdata-relative offset of <c>add rsp; iret</c> (seven bytes before <c>doreti_iret</c>).</summary>
+    public const long AddRspIret_1001 = DoretiIret_1001 - 7;
+
+    /// <summary>Kdata-relative offset of <c>swapgs; add rsp; iret</c> (ten bytes before <c>doreti_iret</c>).</summary>
+    public const long SwapgsAddRspIret_1001 = DoretiIret_1001 - 10;
+
+    /// <summary>Kdata-relative offset of the <c>justreturn</c> gadget (returns from a system call with no side effect).</summary>
+    public const long Justreturn_1001 = -0xA6ED40;
+
+    /// <summary>Kdata-relative offset of <c>justreturn + 8</c> (pops one register, then returns).</summary>
+    public const long JustreturnPop_1001 = Justreturn_1001 + 8;
+
+    /// <summary>Kdata-relative offset of the <c>pop-all; iret</c> gadget (restores all GPRs from the stack, then IRET).</summary>
+    public const long PopAllIret_1001 = -0xA6EB72;
+
+    /// <summary>Kdata-relative offset of <c>pop-all-except-rdi; iret</c> (four bytes past <see cref="PopAllIret_1001"/>).</summary>
+    public const long PopAllExceptRdiIret_1001 = PopAllIret_1001 + 4;
+
+    /// <summary>Kdata-relative offset of the <c>push-pop-all; iret</c> gadget.</summary>
+    public const long PushPopAllIret_1001 = -0xA10540;
+
+    /// <summary>Kdata-relative offset of the <c>nop; ret</c> gadget (two bytes past <c>wrmsr; ret</c>).</summary>
+    public const long NopRet_1001 = WrmsrRet_1001 + 2;
+
+    /// <summary>Kdata-relative offset of the <c>rep movsb; pop rbp; ret</c> gadget.</summary>
+    public const long RepMovsbPopRbpRet_1001 = -0xA32466;
+
+    /// <summary>Kdata-relative offset of the <c>copyin</c> kernel function.</summary>
+    public const long Copyin_1001 = -0xA32D30;
+
+    /// <summary>Kdata-relative offset of the <c>copyout</c> kernel function.</summary>
+    public const long Copyout_1001 = -0xA32DE0;
+
+    // ---- MSR and control register gadgets (FW 10.01) ----
+
+    /// <summary>Kdata-relative offset of the RDMSR gadget entry point.</summary>
+    public const long RdmsrStart_1001 = -0xA7024A;
+
+    /// <summary>Kdata-relative offset of the <c>wrmsr; ret</c> gadget.</summary>
+    public const long WrmsrRet_1001 = -0xA7161C;
+
+    /// <summary>Kdata-relative offset of the <c>mov rax, cr0</c> gadget.</summary>
+    public const long MovRaxCr0_1001 = -0xA75DA1;
+
+    /// <summary>Kdata-relative offset of the <c>mov cr0, rax</c> gadget.</summary>
+    public const long MovCr0Rax_1001 = -0xA75D9C;
+
+    /// <summary>Kdata-relative offset of the <c>mov rax, cr3</c> gadget.</summary>
+    public const long MovRaxCr3_1001 = -0x3C9A2F;
+
+    /// <summary>Kdata-relative offset of the <c>mov cr3, rax; mov ds, ...</c> gadget.</summary>
+    public const long MovCr3RaxMovDs_1001 = -0xA756A9;
+
+    // ---- Debug register transfer gadgets (FW 10.01) ----
+
+    /// <summary>Kdata-relative offset of the DR-to-GPR transfer gadget (reads DR0-DR3/DR6/DR7 into GPRs).</summary>
+    public const long Dr2GprStart_1001 = -0xA75C53;
+
+    /// <summary>Kdata-relative offset of the first GPR-to-DR transfer gadget (writes GPRs into DR0-DR3).</summary>
+    public const long Gpr2Dr1Start_1001 = -0xA75B3A;
+
+    /// <summary>Kdata-relative offset of the second GPR-to-DR transfer gadget (writes GPRs into DR6/DR7).</summary>
+    public const long Gpr2Dr2Start_1001 = -0xA75A47;
+
+    // ---- Context switch (FW 10.01) ----
+
+    /// <summary>Kdata-relative offset of the <c>cpu_switch</c> function (thread context switch entry).</summary>
+    public const long CpuSwitch_1001 = -0xA75E40;
+
+    // ---- SBL mailbox function and return addresses (FW 10.01) ----
+
+    /// <summary>Kdata-relative offset of <c>sceSblServiceMailbox</c> (SBL service dispatch).</summary>
+    public const long SceSblServiceMailbox_1001 = -0x6F8B10;
+
+    /// <summary>Kdata-relative offset of <c>sceSblAuthMgrSmIsLoadable2</c> (SELF loadability check).</summary>
+    public const long SceSblAuthMgrSmIsLoadable2_1001 = -0x941160;
+
+    /// <summary>Kdata-relative return address inside the <c>verifyHeader</c> call to <c>sceSblServiceMailbox</c>.</summary>
+    public const long SceSblServiceMailboxLrVerifyHeader_1001 = -0x940E47;
+
+    /// <summary>Kdata-relative return address inside the <c>loadSelfSegment</c> call to <c>sceSblServiceMailbox</c>.</summary>
+    public const long SceSblServiceMailboxLrLoadSelfSegment_1001 = -0x940AD4;
+
+    /// <summary>Kdata-relative return address inside the <c>decryptSelfBlock</c> call to <c>sceSblServiceMailbox</c>.</summary>
+    public const long SceSblServiceMailboxLrDecryptSelfBlock_1001 = -0x94051D;
+
+    /// <summary>Kdata-relative return address inside the <c>decryptMultipleSelfBlocks</c> call to <c>sceSblServiceMailbox</c>.</summary>
+    public const long SceSblServiceMailboxLrDecryptMultipleSelfBlocks_1001 = -0x93FD52;
+
+    /// <summary>Kdata-relative return address inside <c>sceSblAuthMgrSmFinalize</c>'s call to <c>sceSblServiceMailbox</c>.</summary>
+    public const long SceSblServiceMailboxLrSceSblAuthMgrSmFinalize_1001 = -0x9411D8;
+
+    /// <summary>Kdata-relative return address inside the <c>verifySuperBlock</c> call to <c>sceSblServiceMailbox</c>.</summary>
+    public const long SceSblServiceMailboxLrVerifySuperBlock_1001 = -0x9EA679;
+
+    /// <summary>Kdata-relative return address inside the first <c>sceSblPfsClearKey</c> call to <c>sceSblServiceMailbox</c>.</summary>
+    public const long SceSblServiceMailboxLrSceSblPfsClearKey1_1001 = -0x9EACF2;
+
+    /// <summary>Kdata-relative return address inside the second <c>sceSblPfsClearKey</c> call to <c>sceSblServiceMailbox</c>.</summary>
+    public const long SceSblServiceMailboxLrSceSblPfsClearKey2_1001 = -0x9EAC8D;
+
+    /// <summary>Kdata-relative return address inside the NPDRM command 5 call to <c>sceSblServiceMailbox</c>.</summary>
+    public const long SceSblServiceMailboxLrNpdrmCmd5_1001 = -0x34D98A;
+
+    /// <summary>Kdata-relative return address inside the NPDRM command 6 call to <c>sceSblServiceMailbox</c>.</summary>
+    public const long SceSblServiceMailboxLrNpdrmCmd6_1001 = -0x34D755;
+
+    // ---- CCP/crypto function and data addresses (FW 10.01) ----
+
+    /// <summary>Kdata-relative offset of <c>sceSblServiceCryptAsync</c> (asynchronous CCP crypto dispatch).</summary>
+    public const long SceSblServiceCryptAsync_1001 = -0x98A590;
+
+    /// <summary>Kdata-relative offset of the singleton dereference inside <c>sceSblServiceCryptAsync</c> (trap target for fpkg crypto interception).</summary>
+    public const long SceSblServiceCryptAsyncDerefSingleton_1001 = -0x98A556;
+
+    /// <summary>Kdata-relative offset of the <c>crypt_message_resolve</c> function (resolves a completed crypto message).</summary>
+    public const long CryptMessageResolve_1001 = -0x4B5A50;
+
+    /// <summary>Kdata-relative offset of the crypto singleton array in the kernel data segment.</summary>
+    public const long CryptSingletonArray_1001 = 0x2C35D70;
+
+    /// <summary>Kdata-relative offset of <c>sceSblPfsSetKeys</c> (registers PFS encryption/signing keys).</summary>
+    public const long SceSblPfsSetKeys_1001 = -0x9EB870;
+
+    // ---- SELF loading and decryption addresses (FW 10.01) ----
+
+    /// <summary>Kdata-relative offset of the <c>loadSelfSegment</c> epilogue (function exit point).</summary>
+    public const long LoadSelfSegmentEpilogue_1001 = -0x940A67;
+
+    /// <summary>Kdata-relative offset of the <c>loadSelfSegment</c> debug watchpoint address.</summary>
+    public const long LoadSelfSegmentWatchpoint_1001 = -0x2FC6A7;
+
+    /// <summary>Kdata-relative return address after the watchpoint instruction inside <c>loadSelfSegment</c>.</summary>
+    public const long LoadSelfSegmentWatchpointLr_1001 = -0x940CA7;
+
+    /// <summary>Kdata-relative return address after the watchpoint instruction inside <c>decryptSelfBlock</c>.</summary>
+    public const long DecryptSelfBlockWatchpointLr_1001 = -0x94093E;
+
+    /// <summary>Kdata-relative offset of the <c>decryptSelfBlock</c> epilogue (function exit point).</summary>
+    public const long DecryptSelfBlockEpilogue_1001 = -0x9408DB;
+
+    /// <summary>Kdata-relative return address after the watchpoint instruction inside <c>decryptMultipleSelfBlocks</c>.</summary>
+    public const long DecryptMultipleSelfBlocksWatchpointLr_1001 = -0x940209;
+
+    /// <summary>Kdata-relative offset of the <c>decryptMultipleSelfBlocks</c> epilogue (function exit point).</summary>
+    public const long DecryptMultipleSelfBlocksEpilogue_1001 = -0x93FFEF;
+
+    // ---- Syscall hooking addresses (FW 10.01) ----
+
+    /// <summary>Kdata-relative offset of the instruction just before the syscall dispatch (hook entry point).</summary>
+    public const long SyscallBefore_1001 = -0x893E21;
+
+    /// <summary>Kdata-relative offset of the instruction just after the syscall dispatch (hook return point).</summary>
+    public const long SyscallAfter_1001 = -0x893DED;
+
+    /// <summary>Kdata-relative offset of the CFI table <c>jmp; int3</c> trampoline used to redirect syscall entries.</summary>
+    public const long SyscallCfiTableJmpInt3_1001 = -0xA06998;
+
+    /// <summary>
+    /// Returns the kdata-relative offset of the CFI table <c>jmp; int3</c>
+    /// trampoline for the given firmware.
+    /// </summary>
+    public static long SyscallCfiTableJmpInt3(uint fw) => (fw & VersionMask) switch
+    {
+        Fw1000 or Fw1001 => SyscallCfiTableJmpInt3_1001,
+        _ => SyscallCfiTableJmpInt3_1001,
+    };
+
+    /// <summary>Kdata-relative offset of the <c>mprotect</c> permission-check patch start.</summary>
+    public const long MprotectFixStart_1001 = -0x9A8293;
+
+    /// <summary>Kdata-relative offset of the <c>mprotect</c> permission-check patch end (six bytes past start).</summary>
+    public const long MprotectFixEnd_1001 = MprotectFixStart_1001 + 6;
+
+    /// <summary>Kdata-relative offset of the ASLR enforcement patch start.</summary>
+    public const long AslrFixStart_1001 = -0x8F033D;
+
+    /// <summary>Kdata-relative offset of the ASLR enforcement patch end (two bytes past start).</summary>
+    public const long AslrFixEnd_1001 = AslrFixStart_1001 + 2;
+
+    // ---- Kernel data-section addresses (FW 10.01) ----
+
+    /// <summary>Kdata-relative offset of the mini syscore header in the data segment.</summary>
+    public const long MiniSyscoreHeader_1001 = 0xE896D8;
+
+    /// <summary>Kdata-relative offset of the kernel <c>malloc</c> function.</summary>
+    public const long Malloc_1001 = -0xBB850;
+
+    /// <summary>Kdata-relative offset of the <c>M_temp</c> (or equivalent) malloc type descriptor.</summary>
+    public const long MallocType_1001 = 0x1407470;
+
+    /// <summary>Kdata-relative offset of the <c>kernel_pmap_store</c> (kernel page-map address).</summary>
+    public const long KernelPmapStore_1001 = 0x2CF0EF8;
+
+    /// <summary>Kdata-relative offset of the PS4-compatibility sysent table.</summary>
+    public const long SysentsPs4_1001 = 0x1A4BB0;
+
+    /// <summary>Kdata-relative offset of the PS4-compatibility <c>sysentvec</c> structure.</summary>
+    public const long SysentvecPs4_1001 = 0xDBA850;
 }

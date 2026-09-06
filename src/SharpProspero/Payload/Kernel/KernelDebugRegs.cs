@@ -12,21 +12,21 @@ namespace SharpProspero.Payload.Kernel;
 public static unsafe class KernelDebugRegs
 {
     /// <summary>
-    /// Reads all debug registers (DR0-DR7, 8 x uint64) from the current CPU.
+    /// Reads debug registers (DR0-DR3, DR6, DR7 = 6 x uint64) from the current CPU.
     /// </summary>
     public static void Read(Span<ulong> regs)
     {
-        if (regs.Length < 8) throw new ArgumentException("Buffer must hold at least 8 ulongs.");
+        if (regs.Length < 6) throw new ArgumentException("Buffer must hold at least 6 ulongs.");
         fixed (ulong* p = regs)
             PayloadKekcall.Invoke(1, (long)(nint)p);
     }
 
     /// <summary>
-    /// Writes all debug registers (DR0-DR7) on the current CPU.
+    /// Writes debug registers (DR0-DR3, DR6, DR7) on the current CPU.
     /// </summary>
     public static void Write(ReadOnlySpan<ulong> regs)
     {
-        if (regs.Length < 8) throw new ArgumentException("Buffer must hold at least 8 ulongs.");
+        if (regs.Length < 6) throw new ArgumentException("Buffer must hold at least 6 ulongs.");
         fixed (ulong* p = regs)
             PayloadKekcall.Invoke(2, (long)(nint)p);
     }

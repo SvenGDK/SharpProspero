@@ -1,6 +1,7 @@
 // SharpProspero - a C# SDK for on-device application modules.
 // Copyright (C) 2026 SvenGDK
 
+using SharpProspero.Payload.Debug;
 using SharpProspero.Payload.IO;
 using SharpProspero.Payload.Kernel;
 
@@ -69,7 +70,7 @@ public static unsafe class PayloadShellCorePatcher
     /// Applies the ShellCore patches for the given firmware and console type.
     /// </summary>
     /// <param name="io">Kernel I/O for reading process structures.</param>
-    /// <param name="cr3">The kernel CR3 value for physical address translation.</param>
+    /// <param name="cr3">The SceShellCore process CR3 for physical address translation.</param>
     /// <param name="dmapBase">Direct physical memory map base.</param>
     /// <param name="firmwareVersion">The running firmware version (BCD-encoded).</param>
     /// <param name="kitType">The console type.</param>
@@ -93,13 +94,20 @@ public static unsafe class PayloadShellCorePatcher
         ShellCorePatch[]? patches = GetPatches(firmwareVersion, kitType);
         if (patches == null || patches.Length == 0) return 0;
 
-        // Apply each patch through physical copy to bypass text protection.
+        // Read the SceShellCore PID for mdbg_copyout page prefetch.
+        int shellCorePid = (int)io.ReadU32(proc + (ulong)KernelOffsets.ProcPid);
+
+        // Prefetch buffer for mdbg_copyout page fault (max patch is 14 bytes).
+        byte* prefetchBuf = stackalloc byte[16];
+
         int applied = 0;
         for (int i = 0; i < patches.Length; i++)
         {
             ulong targetAddr = moduleBase + patches[i].Offset;
             fixed (byte* data = patches[i].Data)
             {
+                PayloadDebug.mdbg_copyout(shellCorePid, (nint)targetAddr, prefetchBuf, (nuint)patches[i].Data.Length);
+
                 if (KernelPaging.PhysCopyin(io, cr3, dmapBase, targetAddr, data, patches[i].Data.Length))
                     applied++;
             }
@@ -129,15 +137,26 @@ public static unsafe class PayloadShellCorePatcher
     /// </summary>
     public static ConsoleKitType DetectKitType()
     {
-        byte* deciPath = stackalloc byte[] {
+        byte* devkitPath = stackalloc byte[] {
             (byte)'/', (byte)'s', (byte)'y', (byte)'s', (byte)'t', (byte)'e', (byte)'m',
-            (byte)'/', (byte)'c', (byte)'o', (byte)'m', (byte)'m', (byte)'o', (byte)'n',
+            (byte)'/', (byte)'p', (byte)'r', (byte)'i', (byte)'v',
+            (byte)'/', (byte)'l', (byte)'i', (byte)'b', (byte)'/', (byte)'l', (byte)'i',
+            (byte)'b', (byte)'S', (byte)'c', (byte)'e', (byte)'D', (byte)'e', (byte)'c',
+            (byte)'i', (byte)'5', (byte)'D', (byte)'t', (byte)'r', (byte)'a', (byte)'c',
+            (byte)'e', (byte)'p', (byte)'.', (byte)'s', (byte)'p', (byte)'r', (byte)'x', 0 };
+
+        if (PayloadFileSystem.access(devkitPath, PayloadFileSystem.F_OK) == 0)
+            return ConsoleKitType.Devkit;
+
+        byte* testkitPath = stackalloc byte[] {
+            (byte)'/', (byte)'s', (byte)'y', (byte)'s', (byte)'t', (byte)'e', (byte)'m',
+            (byte)'/', (byte)'p', (byte)'r', (byte)'i', (byte)'v',
             (byte)'/', (byte)'l', (byte)'i', (byte)'b', (byte)'/', (byte)'l', (byte)'i',
             (byte)'b', (byte)'S', (byte)'c', (byte)'e', (byte)'D', (byte)'e', (byte)'c',
             (byte)'i', (byte)'5', (byte)'T', (byte)'t', (byte)'y', (byte)'p', (byte)'.',
             (byte)'s', (byte)'p', (byte)'r', (byte)'x', 0 };
 
-        if (PayloadFileSystem.access(deciPath, PayloadFileSystem.F_OK) == 0)
+        if (PayloadFileSystem.access(testkitPath, PayloadFileSystem.F_OK) == 0)
             return ConsoleKitType.Testkit;
 
         return ConsoleKitType.Retail;

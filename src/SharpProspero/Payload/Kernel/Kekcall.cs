@@ -32,13 +32,6 @@ public static unsafe partial class PayloadKekcall
         return CrtKekcall(callNr, arg1, arg2, arg3, arg4, arg5, arg6);
     }
 
-    // NOTE: __sp_kekcall is NOT emitted by PayloadCrtEmitter. The kekcall mechanism
-    // requires a dedicated CRT trampoline that packs (callNr << 32) | SYS_getppid into
-    // the full 64-bit RAX register before dispatching through ptr_syscall. The standard
-    // __sp_crt_syscall gateway cannot be used because it takes a 32-bit sysno (zero-extended
-    // to RAX), which cannot encode the kekcall number in the upper 32 bits. A future CRT
-    // emitter update must add the __sp_kekcall symbol for this P/Invoke to resolve at link
-    // time.
     [SuppressGCTransition]
     [LibraryImport("libScePosix", EntryPoint = "__sp_kekcall")]
     private static partial long CrtKekcall(int nr, long a1, long a2, long a3, long a4, long a5, long a6);

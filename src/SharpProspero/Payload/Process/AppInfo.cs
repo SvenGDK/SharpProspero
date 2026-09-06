@@ -19,11 +19,8 @@ public unsafe struct PayloadAppInfo
     /// <summary>An undocumented eight-byte field following the app id.</summary>
     public ulong Unknown1;
 
-    /// <summary>The application type code.</summary>
-    public uint AppType;
-
-    /// <summary>The title identifier, a ten-character ASCII string (e.g. "PPSA01234").</summary>
-    public fixed byte TitleId[10];
+    /// <summary>The title identifier (offset +16, 14 bytes, NUL-padded).</summary>
+    public fixed byte TitleId[14];
 
     /// <summary>Undocumented trailing data.</summary>
     public fixed byte Unknown2[0x3C];
