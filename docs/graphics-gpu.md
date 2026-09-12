@@ -193,10 +193,10 @@ A multi-sampled surface uses `SetFragmentCount` instead of a mip chain; an array
 `SetDepthOrSlices` and `SetArrayRange`; and a compressed surface adds `SetMetadataAddress` (which must be
 a multiple of 256) together with `SetMetadataEnabled`.
 
-`AgcSamplerDescriptor` builds the four-word sampler descriptor (an "S#"): how coordinates wrap, which filters apply for magnification, minification, and between mip levels, the level-of-detail range and bias, anisotropy, an optional depth comparison for shadows, and the border color. A default (all-zero) descriptor wraps, points, and samples the base level, so you only set what you need:
+`AgcSamplerDescriptor` builds the four-word sampler descriptor (an "S#"): how coordinates wrap, which filters apply for magnification, minification, between mip levels and across volume slices, the level-of-detail range and bias, anisotropy, an optional depth comparison for shadows, and the border color, along with the finer controls (secondary bias, filter reduction, anisotropy tuning, forced sRGB). Start from `AgcSamplerDescriptor.Create()`, which matches the hardware's own starting state — coordinates wrap, the full mip range is available, and mip and slice sampling are point — then set only what differs. Prefer it over `default`, whose all-zero mip range clamps sampling to the base level.
 
 ```csharp
-var samp = new AgcSamplerDescriptor();
+var samp = AgcSamplerDescriptor.Create();
 samp.SetAddressModes(AgcAddressMode.ClampToEdge, AgcAddressMode.ClampToEdge, AgcAddressMode.ClampToEdge);
 samp.SetFilter(AgcFilter.Bilinear, AgcFilter.Bilinear, AgcMipFilter.Linear);
 samp.SetLodRange(0f, 15f);

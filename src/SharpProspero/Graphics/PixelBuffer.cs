@@ -61,7 +61,9 @@ public sealed unsafe class PixelBuffer : IDisposable
     public Surface AsSurface()
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
-        return new Surface((uint*)_pixels, Width, Height);
+        // An off-screen target keeps its own alpha channel, so blends composite alpha correctly rather
+        // than forcing it opaque as they would on the display back buffer.
+        return new Surface((uint*)_pixels, Width, Height, Width, opaque: false);
     }
 
     /// <summary>Fills the whole buffer with <paramref name="color"/>.</summary>

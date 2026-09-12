@@ -238,10 +238,14 @@ public sealed unsafe class GifImage : IDisposable
         // Save the canvas in case this frame asks to restore to it afterward.
         canvas.CopyTo(previous, 0);
 
+        // For an interlaced frame the rows arrive in four passes rather than top to bottom; map each row
+        // in decode order to its row in the frame once, so the paint loop stays constant-time per row.
+        int[]? interlaceRows = interlaced ? BuildInterlaceSchedule(frameHeight) : null;
+
         // Paint the frame's opaque pixels onto the canvas, honouring interlacing and transparency.
         for (int row = 0; row < frameHeight; row++)
         {
-            int sourceRow = interlaced ? InterlacedRow(row, frameHeight) : row;
+            int sourceRow = interlaced ? interlaceRows![row] : row;
             int canvasBase = ((top + sourceRow) * screenWidth) + left;
             int indexBase = row * frameWidth;
             for (int column = 0; column < frameWidth; column++)
@@ -350,19 +354,20 @@ public sealed unsafe class GifImage : IDisposable
         return -1;
     }
 
-    private static int InterlacedRow(int pass1Row, int height)
+    private static int[] BuildInterlaceSchedule(int height)
     {
-        // The four interlace passes: rows 0,8,16…; 4,12…; 2,6…; 1,3,5…
-        int i = 0;
-        for (int row = 0; row < height; row += 8, i++)
-            if (i == pass1Row) return row;
-        for (int row = 4; row < height; row += 8, i++)
-            if (i == pass1Row) return row;
-        for (int row = 2; row < height; row += 4, i++)
-            if (i == pass1Row) return row;
-        for (int row = 1; row < height; row += 2, i++)
-            if (i == pass1Row) return row;
-        return pass1Row;
+        // The four interlace passes start at rows 0, 4, 2, 1 and step by 8, 8, 4, 2. Walking them in
+        // order yields, for each row in the order it appears in the image data, its row in the frame.
+        // Every frame row is assigned exactly once, so the whole schedule is built in a single linear
+        // pass and each later lookup is constant time.
+        int[] schedule = new int[height];
+        ReadOnlySpan<int> starts = [0, 4, 2, 1];
+        ReadOnlySpan<int> steps = [8, 8, 4, 2];
+        int index = 0;
+        for (int pass = 0; pass < 4; pass++)
+            for (int row = starts[pass]; row < height; row += steps[pass])
+                schedule[index++] = row;
+        return schedule;
     }
 
     private static void DecodeLzw(ReadOnlySpan<byte> data, int minCodeSize, byte[] output)

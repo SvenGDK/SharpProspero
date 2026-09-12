@@ -175,7 +175,8 @@ public static class CompatEmitter
     /// </summary>
     private readonly record struct CompatFunc(
         string Name, bool Weak, byte[] Code, (int Offset, string Target)[] Relocs,
-        (int Offset, int Register, string Symbol)? Tls = null);
+        (int Offset, int Register, string Symbol)? Tls = null,
+        bool Hidden = false);
 
     // Register numbers, for the address loads below.
     private const int RegRax = 0, RegRdx = 2, RegRbx = 3, RegRdi = 7;
@@ -805,6 +806,16 @@ public static class CompatEmitter
         /// linker fills its displacement the same way.
         /// </summary>
         public void Note(int offset, string target) => _calls.Add((offset, target));
+
+        /// <summary>Appends a four-byte RIP-relative displacement to an internal label. The caller
+        /// emits the opcode before this (a LEA, MOV, or any instruction whose displacement follows
+        /// the opcode bytes). The displacement is resolved in <see cref="Build"/> the same way a
+        /// branch displacement is: <c>target - (at + 4)</c>.</summary>
+        public void Disp32(string label)
+        {
+            _fixups.Add((_code.Count, label));
+            _code.AddRange([0, 0, 0, 0]);
+        }
 
         /// <summary>A call to a name the linker binds, recording where its displacement sits.</summary>
         public void Call(string target)
@@ -2431,7 +2442,7 @@ public static class CompatEmitter
         a.Emit(0x55, 0x48, 0x89, 0xE5);                             // push rbp ; mov rbp, rsp
         a.Emit(0x53);                                               // push rbx
         a.Emit(0x41, 0x54);                                         // push r12
-        a.Emit(0x48, 0x83, 0xEC, 0x08);                             // sub rsp, 8   (16-align)
+        // Three pushes (odd) after the call-pushed return address leave rsp at 0 mod 16.
         a.Emit(0x48, 0x89, 0xFB);                                   // mov rbx, rdi (key slot)
         a.Emit(0x49, 0x89, 0xF4);                                   // mov r12, rsi (state slot)
 
@@ -2466,7 +2477,6 @@ public static class CompatEmitter
         a.JumpIfNotEqual("spin");
 
         a.Mark("done");
-        a.Emit(0x48, 0x83, 0xC4, 0x08);                             // add rsp, 8
         a.Emit(0x41, 0x5C);                                         // pop r12
         a.Emit(0x5B);                                               // pop rbx
         a.Emit(0x5D);                                               // pop rbp
@@ -2604,7 +2614,89 @@ public static class CompatEmitter
         return new("__errno_location", false, code, [.. relocs, (tableAt, ErrorTableSymbol)]);
     }
 
-    // Payload variant of readdir64: same translation body as the TLS variant, but the per-thread
+    // mmap for payloads: uses calloc from libSceLibcInternal instead of SYS_mmap.
+    // SYS_mmap (477) is not available to unprivileged PS5 processes. C payloads resolve
+    // malloc/calloc/free from libSceLibcInternal.sprx which has its own kernel-managed memory
+    // pool. The NativeAOT GC calls mmap for heap allocation; this shim redirects to
+    // calloc with manual 16KB page alignment.
+    private static CompatFunc MmapPayload()
+    {
+        // mmap(addr, len, prot, flags, fd, offset) → calloc(1, rounded + page + 8) + manual align
+        // Ignores addr/prot/flags/fd/offset — all mmap requests become aligned heap allocations.
+        // C args: rdi=addr(ignored), rsi=len, edx=prot(ignored), ecx=flags(ignored),
+        //         r8d=fd(ignored), r9=offset(ignored)
+        var a = new Asm();
+        a.Emit(0x55, 0x48, 0x89, 0xE5);                     // push rbp ; mov rbp, rsp
+        a.Emit(0x53);                                       // push rbx
+        a.Emit(0x48, 0x83, 0xEC, 0x08);                     // sub rsp, 8 (16-byte align)
+        a.Emit(0x48, 0x89, 0xF3);                           // mov rbx, rsi (save len)
+        // Breadcrumb: sp:mmap
+        a.Emit(0x48, 0x8D, 0x3D);                           // lea rdi, [rip+str_mmap]
+        a.Disp32("str_mmap");
+        a.Call("__prospero_klog");
+        // Round len up to 16KB page
+        a.Emit(0x48, 0x81, 0xC3, 0xFF, 0x3F, 0x00, 0x00);   // add rbx, 0x3FFF
+        a.Emit(0x48, 0x81, 0xE3, 0x00, 0xC0, 0xFF, 0xFF);   // and rbx, ~0x3FFF
+        // Over-allocate: calloc(1, rounded_len + page + 8) for manual page alignment.
+        // Store the raw pointer at (aligned - 8) so munmap can free it.
+        a.Emit(0x48, 0x8D, 0xB3, 0x08, 0x40, 0x00, 0x00);   // lea rsi, [rbx + 0x4008] (len + page + 8)
+        a.Emit(0xBF, 0x01, 0x00, 0x00, 0x00);               // mov edi, 1
+        a.Call("calloc");
+        a.Emit(0x48, 0x85, 0xC0);                           // test rax, rax
+        a.JumpIfEqual("fail");
+        // Manually align to 16KB page: aligned = (raw + 0x3FFF + 8) & ~0x3FFF
+        a.Emit(0x48, 0x89, 0xC1);                           // mov rcx, rax (save raw)
+        a.Emit(0x48, 0x05, 0x07, 0x40, 0x00, 0x00);         // add rax, 0x4007 (0x3FFF + 8)
+        a.Emit(0x48, 0x25, 0x00, 0xC0, 0xFF, 0xFF);         // and rax, ~0x3FFF
+        // Store raw pointer at aligned[-8] for munmap/free
+        a.Emit(0x48, 0x89, 0x48, 0xF8);                     // mov [rax - 8], rcx
+        // Breadcrumb: sp:mmap:ok — save result in rbx (len no longer needed)
+        a.Emit(0x48, 0x89, 0xC3);                           // mov rbx, rax
+        a.Emit(0x48, 0x8D, 0x3D);                           // lea rdi, [rip+str_ok]
+        a.Disp32("str_ok");
+        a.Call("__prospero_klog");
+        a.Emit(0x48, 0x89, 0xD8);                           // mov rax, rbx (restore result)
+        a.JumpIfAlways("done");
+        a.Mark("fail");
+        // Breadcrumb: sp:mmap:fail
+        a.Emit(0x48, 0x8D, 0x3D);                           // lea rdi, [rip+str_fail]
+        a.Disp32("str_fail");
+        a.Call("__prospero_klog");
+        a.Emit(0x48, 0xC7, 0xC0, 0xFF, 0xFF, 0xFF, 0xFF);   // mov rax, -1 (MAP_FAILED)
+        a.Mark("done");
+        // Epilog: matches prolog exactly (sub rsp 8 → add rsp 8, push rbx → pop rbx)
+        a.Emit(0x48, 0x83, 0xC4, 0x08);                     // add rsp, 8
+        a.Emit(0x5B);                                       // pop rbx
+        a.Emit(0x5D, 0xC3);                                 // pop rbp ; ret
+        // String data (after ret, never executed — referenced via RIP-relative LEA)
+        a.Mark("str_mmap");
+        a.Emit(0x73, 0x70, 0x3A, 0x6D, 0x6D, 0x61, 0x70, 0x0A, 0x00); // "sp:mmap\n\0"
+        a.Mark("str_ok");
+        a.Emit(0x73, 0x70, 0x3A, 0x6D, 0x6D, 0x61, 0x70, 0x3A, 0x6F, 0x6B, 0x0A, 0x00); // "sp:mmap:ok\n\0"
+        a.Mark("str_fail");
+        a.Emit(0x73, 0x70, 0x3A, 0x6D, 0x6D, 0x61, 0x70, 0x3A, 0x66, 0x61, 0x69, 0x6C, 0x0A, 0x00); // "sp:mmap:fail\n\0"
+        (byte[] code, (int, string)[] relocs) = a.Build();
+        return new("mmap", false, code, relocs);
+    }
+
+    // mprotect for payloads: no-op returning success. Memory from calloc is already
+    // PROT_READ|PROT_WRITE. The NativeAOT GC's mprotect "commit" calls are harmless no-ops.
+    private static CompatFunc MProtectPayload()
+    {
+        var a = new Asm();
+        a.Emit(0x55, 0x48, 0x89, 0xE5);                     // push rbp ; mov rbp, rsp
+        // Breadcrumb: sp:mprot
+        a.Emit(0x48, 0x8D, 0x3D);                           // lea rdi, [rip+str_mprot]
+        a.Disp32("str_mprot");
+        a.Call("__prospero_klog");
+        a.Emit(0x31, 0xC0);                                 // xor eax, eax (return 0 = success)
+        a.Emit(0x5D, 0xC3);                                 // pop rbp ; ret
+        a.Mark("str_mprot");
+        a.Emit(0x73, 0x70, 0x3A, 0x6D, 0x70, 0x72, 0x6F, 0x74, 0x0A, 0x00); // "sp:mprot\n\0"
+        (byte[] code, (int, string)[] relocs) = a.Build();
+        return new("mprotect", false, code, relocs);
+    }
+
     // buffer the device entry is copied into comes from the pthread-key accessor. The layout is
     // identical (readdir entry at offset 0, errno word past it) so every offset below matches the
     // TLS variant byte for byte.
@@ -2711,8 +2803,6 @@ public static class CompatEmitter
         a.Emit(0x44, 0x89, 0xE0);                                   // mov eax, r12d
         a.JumpIfAlways("out");
         a.Mark("nomem");
-        // The runtime's EAGAIN is 11 (see ErrorNumbers[]); pthread_create returns error codes rather
-        // than setting errno, so returning the number directly is the right shape.
         a.Emit(0xB8, 0x0B, 0x00, 0x00, 0x00);                       // mov eax, 11 (EAGAIN)
         a.JumpIfAlways("out");
         a.Mark("ok");
@@ -2793,6 +2883,102 @@ public static class CompatEmitter
         a.Emit(0xC3);                                               // ret
         (byte[] code, (int Offset, string Target)[] relocs) = a.Build();
         return new(PayloadThreadTrampolineSymbol, false, code, relocs);
+    }
+
+    // __sp_kfncall(fn, a1, a2, a3, a4, a5, a6, kframeKva, uretframeKva, kstackKva)
+    //
+    // Calls a kernel function by entering kernel mode via INT 9 and returning via INT 1.
+    // The IDT and TSS must be patched beforehand by the managed KernelKfncallSetup class.
+    // Arguments are passed through registers directly — the INT 9 → iret chain preserves
+    // all GPRs, so the kernel function receives them in the standard AMD64 convention.
+    // The return value in RAX is preserved through the INT 1 → iret return chain.
+    //
+    // 10 args: rdi=fn, rsi=a1, rdx=a2, rcx=a3, r8=a4, r9=a5,
+    //          [rsp+8]=a6, [rsp+16]=kframeKva, [rsp+24]=uretframeKva, [rsp+32]=kstackKva
+    private const string KfncallInt9Symbol = "__sp_kfncall";
+
+    private static CompatFunc KfncallInt9()
+    {
+        var a = new Asm();
+        // Prolog: save callee-saved + allocate local frame
+        a.Emit(0x55, 0x48, 0x89, 0xE5);                             // push rbp ; mov rbp, rsp
+        a.Emit(0x41, 0x57, 0x41, 0x56, 0x41, 0x55, 0x41, 0x54);     // push r15/r14/r13/r12
+        a.Emit(0x53);                                               // push rbx
+        a.Emit(0x48, 0x81, 0xEC, 0x90, 0x00, 0x00, 0x00);           // sub rsp, 0x90
+
+        // Save all 10 arguments to stack
+        a.Emit(0x48, 0x89, 0x7D, 0xC8);                             // mov [rbp-0x38], rdi (fn)
+        a.Emit(0x48, 0x89, 0x75, 0xC0);                             // mov [rbp-0x40], rsi (a1)
+        a.Emit(0x48, 0x89, 0x55, 0xB8);                             // mov [rbp-0x48], rdx (a2)
+        a.Emit(0x48, 0x89, 0x4D, 0xB0);                             // mov [rbp-0x50], rcx (a3)
+        a.Emit(0x4C, 0x89, 0x45, 0xA8);                             // mov [rbp-0x58], r8  (a4)
+        a.Emit(0x4C, 0x89, 0x4D, 0xA0);                             // mov [rbp-0x60], r9  (a5)
+        a.Emit(0x48, 0x8B, 0x45, 0x10);                             // mov rax, [rbp+0x10] (a6)
+        a.Emit(0x48, 0x89, 0x45, 0x98);                             // mov [rbp-0x68], rax
+        a.Emit(0x48, 0x8B, 0x45, 0x18);                             // mov rax, [rbp+0x18] (kframeKva)
+        a.Emit(0x49, 0x89, 0xC4);                                   // mov r12, rax
+        a.Emit(0x48, 0x8B, 0x45, 0x20);                             // mov rax, [rbp+0x20] (uretframeKva)
+        a.Emit(0x49, 0x89, 0xC5);                                   // mov r13, rax
+        a.Emit(0x48, 0x8B, 0x45, 0x28);                             // mov rax, [rbp+0x28] (kstackKva)
+        a.Emit(0x49, 0x89, 0xC6);                                   // mov r14, rax
+
+        // Save RSP for uretframe (will be restored by INT 1 return)
+        a.Emit(0x49, 0x89, 0xE7);                                   // mov r15, rsp
+
+        // Build kframe (40 bytes) at [rsp]: {fn, 0x20, 0x02, kstackKva, 0x00}
+        a.Emit(0x48, 0x8B, 0x45, 0xC8);                             // mov rax, [rbp-0x38] (fn)
+        a.Emit(0x48, 0x89, 0x04, 0x24);                             // mov [rsp], rax       (kframe.RIP)
+        a.Emit(0x48, 0xC7, 0x44, 0x24, 0x08, 0x20, 0x00, 0x00, 0x00); // mov qword [rsp+8], 0x20 (CS)
+        a.Emit(0x48, 0xC7, 0x44, 0x24, 0x10, 0x02, 0x00, 0x00, 0x00); // mov qword [rsp+16], 0x02 (RFLAGS)
+        a.Emit(0x4C, 0x89, 0x74, 0x24, 0x18);                       // mov [rsp+24], r14    (kframe.RSP = kstackKva)
+        a.Emit(0x48, 0xC7, 0x44, 0x24, 0x20, 0x00, 0x00, 0x00, 0x00); // mov qword [rsp+32], 0x00 (SS)
+
+        // Copyin kframe: __sp_kernel_copyin(kframeKva, &kframe_on_stack, 40)
+        a.Emit(0x4C, 0x89, 0xE7);                                   // mov rdi, r12 (kframeKva)
+        a.Emit(0x48, 0x89, 0xE6);                                   // mov rsi, rsp (kframe on stack)
+        a.Emit(0xBA, 0x28, 0x00, 0x00, 0x00);                       // mov edx, 40
+        a.Call("__sp_kernel_copyin");
+
+        // Build uretframe (40 bytes) at [rsp]: {.Lint1_return, 0x43, 0x10202, saved_rsp, 0x3B}
+        a.Emit(0x48, 0x8D, 0x05);                                   // lea rax, [rip+.Lint1_return]
+        a.Disp32("int1_return");
+        a.Emit(0x48, 0x89, 0x04, 0x24);                             // mov [rsp], rax       (uretframe.RIP)
+        a.Emit(0x48, 0xC7, 0x44, 0x24, 0x08, 0x43, 0x00, 0x00, 0x00); // mov qword [rsp+8], 0x43 (CS)
+        a.Emit(0xC7, 0x44, 0x24, 0x10, 0x02, 0x02, 0x01, 0x00);     // mov dword [rsp+16], 0x10202 (RFLAGS low)
+        a.Emit(0xC7, 0x44, 0x24, 0x14, 0x00, 0x00, 0x00, 0x00);     // mov dword [rsp+20], 0       (RFLAGS high)
+        a.Emit(0x4C, 0x89, 0x7C, 0x24, 0x18);                       // mov [rsp+24], r15    (uretframe.RSP = saved rsp)
+        a.Emit(0x48, 0xC7, 0x44, 0x24, 0x20, 0x3B, 0x00, 0x00, 0x00); // mov qword [rsp+32], 0x3B (SS)
+
+        // Copyin uretframe: __sp_kernel_copyin(uretframeKva, &uretframe_on_stack, 40)
+        a.Emit(0x4C, 0x89, 0xEF);                                   // mov rdi, r13 (uretframeKva)
+        a.Emit(0x48, 0x89, 0xE6);                                   // mov rsi, rsp
+        a.Emit(0xBA, 0x28, 0x00, 0x00, 0x00);                       // mov edx, 40
+        a.Call("__sp_kernel_copyin");
+
+        // Load kernel function arguments into registers
+        a.Emit(0x48, 0x8B, 0x7D, 0xC0);                             // mov rdi, [rbp-0x40] (a1)
+        a.Emit(0x48, 0x8B, 0x75, 0xB8);                             // mov rsi, [rbp-0x48] (a2)
+        a.Emit(0x48, 0x8B, 0x55, 0xB0);                             // mov rdx, [rbp-0x50] (a3)
+        a.Emit(0x48, 0x8B, 0x4D, 0xA8);                             // mov rcx, [rbp-0x58] (a4)
+        a.Emit(0x4C, 0x8B, 0x45, 0xA0);                             // mov r8,  [rbp-0x60] (a5)
+        a.Emit(0x4C, 0x8B, 0x4D, 0x98);                             // mov r9,  [rbp-0x68] (a6)
+
+        // INT 9 placeholder — replaced with NOPs for crash isolation testing.
+        a.Emit(0x90, 0x90);                                         // nop; nop (was: int 9)
+
+        // INT 1 returns here via uretframe with RSP = r15 (saved before copyin)
+        a.Mark("int1_return");
+        // RAX = kernel function return value (preserved through the iret chain)
+
+        // Epilog
+        a.Emit(0x48, 0x81, 0xC4, 0x90, 0x00, 0x00, 0x00);           // add rsp, 0x90
+        a.Emit(0x5B);                                               // pop rbx
+        a.Emit(0x41, 0x5C, 0x41, 0x5D, 0x41, 0x5E, 0x41, 0x5F);     // pop r12/r13/r14/r15
+        a.Emit(0x5D);                                               // pop rbp
+        a.Emit(0xC3);                                               // ret
+
+        (byte[] code, (int Offset, string Target)[] relocs) = a.Build();
+        return new(KfncallInt9Symbol, false, code, relocs, Hidden: true);
     }
 
     /// <summary>A getenv that walks a baked-in NUL-separated table of "KEY=VALUE" entries in .data.
@@ -3108,7 +3294,8 @@ public static class CompatEmitter
                 "__errno_location" => ErrnoLocationPayload(),
                 SetErrnoSymbol => SetErrnoPayload(),
                 "getenv" => GetenvPayload(),
-                "mprotect" => MProtect(extraPage: true),
+                "mmap" => MmapPayload(),
+                "mprotect" => MProtectPayload(),
                 _ => f,
             });
         }
@@ -3233,24 +3420,24 @@ public static class CompatEmitter
         // external target. sh_info is the count of leading locals.
         var strtab = new StringTable();
         var symIndex = new Dictionary<string, int>(StringComparer.Ordinal);
-        var symbols = new List<(int NameOff, byte Info, int Shndx, ulong Value, ulong Size)>
+        var symbols = new List<(int NameOff, byte Info, int Shndx, ulong Value, ulong Size, byte Other)>
         {
-            (0, 0, 0, 0, 0),                                                                       // [0] null
-            (strtab.Add(ReaddirBufSymbol), (BindLocal << 4) | TypeTls, shTbss, 0, ReaddirBufSize), // [1] tls buffer
+            (0, 0, 0, 0, 0, 0),                                                                       // [0] null
+            (strtab.Add(ReaddirBufSymbol), (BindLocal << 4) | TypeTls, shTbss, 0, ReaddirBufSize, 0), // [1] tls buffer
             (strtab.Add(ErrnoShadowSymbol), (BindLocal << 4) | TypeTls, shTbss,                    // [2] error number
-                ErrnoShadowOffset, ErrnoShadowSize),
+                ErrnoShadowOffset, ErrnoShadowSize, 0),
             (strtab.Add(ModuleNameSymbol), (BindLocal << 4) | TypeObject, shData,                  // [3] module name
-                (ulong)moduleNameOffset, (ulong)ModuleNameText.Length),
+                (ulong)moduleNameOffset, (ulong)ModuleNameText.Length, 0),
             (strtab.Add(ErrorTableSymbol), (BindLocal << 4) | TypeObject, shData,                  // [4] the numbering
-                (ulong)errorTableOffset, ErrorTableSize),
+                (ulong)errorTableOffset, ErrorTableSize, 0),
             (strtab.Add(ClockTableSymbol), (BindLocal << 4) | TypeObject, shData,                  // [5] the clocks
-                (ulong)clockTableOffset, ClockTableSize),
+                (ulong)clockTableOffset, ClockTableSize, 0),
             (strtab.Add(FcntlTableSymbol), (BindLocal << 4) | TypeObject, shData,                  // [6] the commands
-                (ulong)fcntlTableOffset, FcntlTableSize),
+                (ulong)fcntlTableOffset, FcntlTableSize, 0),
             (strtab.Add(AdviceTableSymbol), (BindLocal << 4) | TypeObject, shData,                 // [7] the hints
-                (ulong)adviceTableOffset, AdviceTableSize),
+                (ulong)adviceTableOffset, AdviceTableSize, 0),
             (strtab.Add(ReverseErrorTableSymbol), (BindLocal << 4) | TypeObject, shData,           // [8] read back
-                (ulong)reverseErrorTableOffset, ErrorTableSize),
+                (ulong)reverseErrorTableOffset, ErrorTableSize, 0),
         };
         symIndex[ReaddirBufSymbol] = 1;
         symIndex[ErrnoShadowSymbol] = 2;
@@ -3270,13 +3457,13 @@ public static class CompatEmitter
         {
             symIndex[PayloadKeySlotSymbol] = symbols.Count;
             symbols.Add((strtab.Add(PayloadKeySlotSymbol), (BindLocal << 4) | TypeObject, shData,
-                (ulong)keySlotOffset, 4));
+                (ulong)keySlotOffset, 4, 0));
             symIndex[PayloadKeyStateSymbol] = symbols.Count;
             symbols.Add((strtab.Add(PayloadKeyStateSymbol), (BindLocal << 4) | TypeObject, shData,
-                (ulong)keyStateOffset, 4));
+                (ulong)keyStateOffset, 4, 0));
             symIndex[EnvTableSymbol] = symbols.Count;
             symbols.Add((strtab.Add(EnvTableSymbol), (BindLocal << 4) | TypeObject, shData,
-                (ulong)envTableOffset, (ulong)envTableBytes!.Length));
+                (ulong)envTableOffset, (ulong)envTableBytes!.Length, 0));
         }
         int LocalSymbolCount = payload ? 12 : 9;
 
@@ -3285,13 +3472,13 @@ public static class CompatEmitter
             CompatFunc f = funcs[i];
             byte bind = f.Weak ? BindWeak : BindGlobal;
             symIndex[f.Name] = symbols.Count;
-            symbols.Add((strtab.Add(f.Name), (byte)((bind << 4) | TypeFunc), shText, (ulong)textOffsets[i], (ulong)f.Code.Length));
+            symbols.Add((strtab.Add(f.Name), (byte)((bind << 4) | TypeFunc), shText, (ulong)textOffsets[i], (ulong)f.Code.Length, f.Hidden ? (byte)2 : (byte)0));
         }
 
         for (int i = 0; i < data.Count; i++)
         {
             symIndex[data[i].Name] = symbols.Count;
-            symbols.Add((strtab.Add(data[i].Name), (BindGlobal << 4) | TypeObject, shData, (ulong)(i * 8), 8));
+            symbols.Add((strtab.Add(data[i].Name), (BindGlobal << 4) | TypeObject, shData, (ulong)(i * 8), 8, 0));
         }
 
         var externals = new List<string>();
@@ -3301,7 +3488,7 @@ public static class CompatEmitter
                 return;
             symIndex[target] = symbols.Count;
             externals.Add(target);
-            symbols.Add((strtab.Add(target), (byte)((BindGlobal << 4) | type), 0, 0, 0));
+            symbols.Add((strtab.Add(target), (byte)((BindGlobal << 4) | type), 0, 0, 0, 0));
         }
         foreach (CompatFunc f in funcs)
             foreach ((int _, string target) in f.Relocs)
@@ -3348,7 +3535,7 @@ public static class CompatEmitter
 
         byte[] symtab = new byte[24 * symbols.Count];
         for (int i = 0; i < symbols.Count; i++)
-            WriteSym(symtab, i, symbols[i].NameOff, symbols[i].Info, symbols[i].Shndx, symbols[i].Value, symbols[i].Size);
+            WriteSym(symtab, i, symbols[i].NameOff, symbols[i].Info, symbols[i].Other, symbols[i].Shndx, symbols[i].Value, symbols[i].Size);
 
         byte[] rela = new byte[24 * relocs.Count];
         for (int i = 0; i < relocs.Count; i++)
@@ -3429,12 +3616,12 @@ public static class CompatEmitter
         return e;
     }
 
-    private static void WriteSym(byte[] table, int index, int nameOff, byte info, int sectionIndex, ulong value, ulong size)
+    private static void WriteSym(byte[] table, int index, int nameOff, byte info, byte other, int sectionIndex, ulong value, ulong size)
     {
         int b = index * 24;
         BinaryPrimitives.WriteUInt32LittleEndian(table.AsSpan(b), (uint)nameOff);
         table[b + 4] = info;
-        table[b + 5] = 0;
+        table[b + 5] = other;
         BinaryPrimitives.WriteUInt16LittleEndian(table.AsSpan(b + 6), (ushort)sectionIndex);
         BinaryPrimitives.WriteUInt64LittleEndian(table.AsSpan(b + 8), value);
         BinaryPrimitives.WriteUInt64LittleEndian(table.AsSpan(b + 16), size);

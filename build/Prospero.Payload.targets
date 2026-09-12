@@ -54,6 +54,7 @@
       <_PayloadLinkArgs Condition="'@(ProsperoRuntimeLibrary)' != ''">$(_PayloadLinkArgs) @(ProsperoRuntimeLibrary->'--lib &quot;%(FullPath)&quot;', ' ')</_PayloadLinkArgs>
       <_PayloadLinkArgs>$(_PayloadLinkArgs) --out &quot;$(ProsperoPayloadPath)&quot; --entry $(ProsperoEntrySymbol)</_PayloadLinkArgs>
       <_PayloadLinkArgs Condition="'$(EmitDiagnosticBreadcrumbs)' == 'true'">$(_PayloadLinkArgs) --diagnostics</_PayloadLinkArgs>
+      <_PayloadLinkArgs Condition="'$(ProsperoReturnOnExit)' == 'true'">$(_PayloadLinkArgs) --return-on-exit</_PayloadLinkArgs>
     </PropertyGroup>
 
     <Message Importance="high" Text="Linking payload $(ProsperoPayloadName) from $(ProsperoObjectFile)" />

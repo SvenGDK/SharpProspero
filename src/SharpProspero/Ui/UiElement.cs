@@ -58,7 +58,7 @@ public abstract class UiElement
     /// </summary>
     internal virtual void Arrange(UiRect bounds, UiTheme theme) => Bounds = bounds;
 
-    /// <summary>Vertically centers a single line of text within <paramref name="bounds"/> at <paramref name="scale"/>.</summary>
-    private protected static int CenterTextY(UiRect bounds, int scale)
-        => bounds.Y + (bounds.Height - BitmapFont.GlyphSize * scale) / 2;
+    /// <summary>Vertically centers a single line of the theme font's text within <paramref name="bounds"/>.</summary>
+    private protected static int CenterTextY(UiRect bounds, UiTheme theme)
+        => bounds.Y + (bounds.Height - theme.LineHeight) / 2;
 }

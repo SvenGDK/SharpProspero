@@ -118,10 +118,16 @@ public sealed unsafe class Renderer3D : IDisposable
         DirectMemoryRegion primitiveRegion = _primitiveState[_slot];
         DirectMemoryRegion constantsRegion = _constants[_slot];
 
-        // The matrices the vertex program reads.
+        // The matrices the vertex program reads. The program uses the second matrix only to orient the
+        // normals, so it receives the normal matrix, not the model matrix itself: correct normal
+        // transformation is by the inverse-transpose of the model, which keeps normals perpendicular to
+        // the surface under a non-uniform scale. For a rigid or uniformly-scaled model this equals the
+        // model's rotation. A degenerate (non-invertible) model falls back to the model matrix.
         Constants* constants = (Constants*)constantsRegion.Pointer;
         constants->Mvp = mvp;
-        constants->Model = model;
+        constants->Model = Matrix4x4.Invert(model, out Matrix4x4 inverseModel)
+            ? Matrix4x4.Transpose(inverseModel)
+            : model;
 
         // The colour target points at the framebuffer being drawn, and has to describe it the way the
         // display was opened: the processor writes where it is told, so a target that disagrees with

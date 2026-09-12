@@ -17,7 +17,15 @@
 
   <ItemGroup>
     <ProjectReference Include="$(SharpProsperoRoot)\src\SharpProspero\SharpProspero.csproj" />
-    <ProjectReference Include="$(SharpProsperoRoot)\tools\SharpProspero.Link\SharpProspero.Link.csproj" />
+  </ItemGroup>
+
+  <!-- The loader needs libSceSysmodule for module loading. -->
+  <PropertyGroup>
+    <ProsperoKernelSprx>libkernel_sys.sprx</ProsperoKernelSprx>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProsperoSprx Include="libSceLibcInternal" />
+    <ProsperoSprx Include="libSceSysmodule" />
   </ItemGroup>
 
   <Import Project="$(SharpProsperoRoot)\build\Prospero.Payload.targets" />

@@ -26,6 +26,16 @@ public static unsafe class PayloadShellUiMonitor
     /// <param name="fwMajorMinor">Firmware major.minor for vmspace offset lookup.</param>
     public static void Run(PayloadKernelIo io, int sysCorePid, ulong dmapBase, uint fwMajorMinor)
     {
+        // Patch the already-running SceShellUI first, before entering the kqueue
+        // watch. Without this, the trophy stub only applies to future exec events;
+        // on first boot no respawn happens and the patch never takes effect.
+        fixed (byte* shellUiName = "SceShellUI\0"u8)
+        {
+            int currentShellUiPid = PayloadSysctl.FindPidByName(shellUiName);
+            if (currentShellUiPid > 0)
+                PayloadShellUiPatcher.PatchTrophyChecks(io, currentShellUiPid, dmapBase, fwMajorMinor);
+        }
+
         int kq = PayloadEvent.kqueue();
         if (kq < 0) return;
 
@@ -76,7 +86,8 @@ public static unsafe class PayloadShellUiMonitor
                 && appInfo.TitleId[5] == (byte)'0'
                 && appInfo.TitleId[6] == (byte)'0'
                 && appInfo.TitleId[7] == (byte)'8'
-                && appInfo.TitleId[8] == (byte)'7';
+                && appInfo.TitleId[8] == (byte)'7'
+                && appInfo.TitleId[9] == 0;
 
             if (!isShellUi)
                 continue;

@@ -97,18 +97,35 @@ public static unsafe class PayloadShellCorePatcher
         // Read the SceShellCore PID for mdbg_copyout page prefetch.
         int shellCorePid = (int)io.ReadU32(proc + (ulong)KernelOffsets.ProcPid);
 
-        // Prefetch buffer for mdbg_copyout page fault (max patch is 14 bytes).
-        byte* prefetchBuf = stackalloc byte[16];
+        // Prefetch buffer sized to one page so mdbg_copyout can pull each 4 KB
+        // page containing the patch into physical memory. mdbg_copyout is the
+        // demand-page fault trigger: reading a byte inside the page causes the
+        // kernel to resolve the mapping and back it with a real physical frame.
+        // Without a resident page, the subsequent phys_copyin (which walks the
+        // process page tables and writes through the DMAP) has nowhere to land
+        // the bytes and the patch silently fails.
+        const int PageSize = 4096;
+        const ulong PageMask = ~(ulong)(PageSize - 1);
+        byte* prefetchBuf = stackalloc byte[PageSize];
 
         int applied = 0;
         for (int i = 0; i < patches.Length; i++)
         {
             ulong targetAddr = moduleBase + patches[i].Offset;
+            int patchLen = patches[i].Data.Length;
+
+            // Fault in every 4 KB page the patch touches, including the case
+            // where the patch straddles a page boundary. One mdbg_copyout per
+            // page is enough — reading any byte inside a page faults the whole
+            // page into physical memory.
+            ulong firstPage = targetAddr & PageMask;
+            ulong lastPage = (targetAddr + (ulong)(patchLen - 1)) & PageMask;
+            for (ulong page = firstPage; page <= lastPage; page += PageSize)
+                PayloadDebug.mdbg_copyout(shellCorePid, (nint)page, prefetchBuf, 1);
+
             fixed (byte* data = patches[i].Data)
             {
-                PayloadDebug.mdbg_copyout(shellCorePid, (nint)targetAddr, prefetchBuf, (nuint)patches[i].Data.Length);
-
-                if (KernelPaging.PhysCopyin(io, cr3, dmapBase, targetAddr, data, patches[i].Data.Length))
+                if (KernelPaging.PhysCopyin(io, cr3, dmapBase, targetAddr, data, patchLen))
                     applied++;
             }
         }

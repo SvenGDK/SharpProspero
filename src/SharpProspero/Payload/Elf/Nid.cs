@@ -1,8 +1,8 @@
 // SharpProspero - a C# SDK for on-device application modules.
 // Copyright (C) 2026 SvenGDK
 
+using SharpProspero.Security;
 using System;
-using System.Security.Cryptography;
 
 namespace SharpProspero.Payload.Elf;
 
@@ -19,8 +19,7 @@ public static class PayloadNid
     /// </summary>
     public static unsafe string Compute(ReadOnlySpan<byte> symbolName)
     {
-        Span<byte> hash = stackalloc byte[20];
-        SHA1.HashData(symbolName, hash);
+        byte[] hash = Sha1.Hash(symbolName);
 
         Span<byte> reversed = stackalloc byte[8];
         for (int i = 0; i < 8; i++)
@@ -35,8 +34,7 @@ public static class PayloadNid
     /// </summary>
     public static unsafe ulong ComputeRaw(ReadOnlySpan<byte> symbolName)
     {
-        Span<byte> hash = stackalloc byte[20];
-        SHA1.HashData(symbolName, hash);
+        byte[] hash = Sha1.Hash(symbolName);
 
         ulong value = 0;
         for (int i = 0; i < 8; i++)

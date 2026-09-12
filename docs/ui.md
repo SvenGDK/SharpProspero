@@ -281,8 +281,8 @@ var screen = new UiScreen(options);
 
 ## Theming
 
-`UiTheme` holds the colors and spacing. Use `UiTheme.Default` for a dark theme, or change what you want
-with an object initializer and pass it to the screen:
+`UiTheme` holds the colors, spacing and font every control draws with. Use `UiTheme.Default` for a dark
+theme, or change what you want with an object initializer and pass it to the screen:
 
 ```csharp
 var theme = new UiTheme
@@ -292,6 +292,21 @@ var theme = new UiTheme
 };
 var screen = new UiScreen(panel, theme);
 ```
+
+By default the interface draws with the built-in bitmap text at `TextScale`. Set `Font` to a loaded
+outline font for crisp antialiased text everywhere - every control measures and draws through the theme
+font, so one line changes the whole interface:
+
+```csharp
+using var module = SystemModule.Load(SystemModuleId.Font);
+using var backend = SystemModule.Load(SystemModuleId.FontFt);
+using var font = SystemFont.Open(SceFontSet.StdEuropeanW1G, pixelSize: 22);
+
+var theme = new UiTheme { Font = font };   // controls now render in the system font
+```
+
+`LineHeight` and `RowHeight` follow the chosen font, so layouts size themselves to it. A `TrueTypeFont`
+loaded from a file works the same way. Keep the font alive for as long as the theme is used.
 
 ## A control of your own
 

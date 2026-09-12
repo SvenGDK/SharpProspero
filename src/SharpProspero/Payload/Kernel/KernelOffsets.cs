@@ -332,10 +332,34 @@ public static class KernelOffsets
     };
 
     /// <summary>
-    /// Returns <see langword="true"/> when the firmware version is recognized and all
-    /// five kernel data offsets are available.
+    /// Highest firmware version for which every core offset in this class carries a
+    /// verified value. Callers targeting a higher firmware must resolve their
+    /// addresses through a firmware-specific source before invoking any code that
+    /// would otherwise consult these tables.
     /// </summary>
-    public static bool IsSupported(uint firmwareVersion) => Allproc(firmwareVersion) != 0;
+    public const uint HighestCoveredFirmware = Fw1060;
+
+    /// <summary>
+    /// Returns <see langword="true"/> when the firmware version is one of the covered
+    /// versions and every core kernel offset queried in the install path resolves to
+    /// a non-zero value. Callers use this as a hard boundary: a <see langword="false"/>
+    /// result means the install must abort before touching any kernel address.
+    /// </summary>
+    /// <remarks>
+    /// The check queries the four offsets that the install path relies on end-to-end.
+    /// A version that is recognized but returns zero for any of them fails the
+    /// gate the same way an entirely unrecognized version does. Adding coverage for
+    /// a new firmware means populating every switch expression in this class with
+    /// the empirically-verified values; anything less is a partial coverage the
+    /// gate will refuse.
+    /// </remarks>
+    public static bool IsSupported(uint firmwareVersion)
+    {
+        return Allproc(firmwareVersion) != 0
+            && SecurityFlags(firmwareVersion) != 0
+            && Rootvnode(firmwareVersion) != 0
+            && KdataBase(firmwareVersion) != 0;
+    }
 
     // ---- FW 10.01 absolute addresses (for backward compatibility) ----
 
@@ -774,7 +798,7 @@ public static class KernelOffsets
     public static long SyscallCfiTableJmpInt3(uint fw) => (fw & VersionMask) switch
     {
         Fw1000 or Fw1001 => SyscallCfiTableJmpInt3_1001,
-        _ => SyscallCfiTableJmpInt3_1001,
+        _ => 0,
     };
 
     /// <summary>Kdata-relative offset of the <c>mprotect</c> permission-check patch start.</summary>
@@ -802,6 +826,36 @@ public static class KernelOffsets
 
     /// <summary>Kdata-relative offset of the <c>kernel_pmap_store</c> (kernel page-map address).</summary>
     public const long KernelPmapStore_1001 = 0x2CF0EF8;
+
+    /// <summary>
+    /// Returns the kdata-relative offset of the <c>kernel_pmap_store</c> for the given
+    /// firmware version, or zero if the firmware is not recognized.
+    /// </summary>
+    public static long KernelPmapStore(uint firmwareVersion) => (firmwareVersion & VersionMask) switch
+    {
+        Fw300 or Fw310 or Fw320 or Fw321 => 0x31BE218,
+
+        Fw400 or Fw402 or Fw403 or Fw450 or Fw451 => 0x3257A78,
+
+        Fw500 or Fw502 or Fw510 => 0x3398A88,
+        Fw550 => 0x3394A88,
+
+        Fw600 or Fw602 or Fw650 => 0x32E4358,
+
+        Fw700 or Fw701 or Fw720 or Fw740 or Fw760 or Fw761 => 0x2E2C848,
+
+        Fw800 or Fw820 or Fw840 or Fw860 => 0x2E48848,
+
+        Fw900 or Fw905 or Fw920 or Fw940 or Fw960 => 0x2D28B78,
+
+        Fw1000 or Fw1001 or Fw1020 or Fw1040 or Fw1060 => 0x2CF0EF8,
+
+        Fw1100 or Fw1120 or Fw1140 or Fw1160 => 0x2E04F18,
+
+        Fw1200 or Fw1202 or Fw1220 or Fw1240 or Fw1260 or Fw1270 => 0x2E1CFB8,
+
+        _ => 0,
+    };
 
     /// <summary>Kdata-relative offset of the PS4-compatibility sysent table.</summary>
     public const long SysentsPs4_1001 = 0x1A4BB0;

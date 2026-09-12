@@ -138,3 +138,60 @@ public struct SceVideoOutBufferAttribute2
     private ulong _reserved1_1;
     private ulong _reserved1_2;
 }
+
+/// <summary>
+/// The output options for a mode change, an opaque 64-byte block. Fill it with
+/// <see cref="VideoOut.sceVideoOutInitializeOutputOptions"/> before passing it to
+/// <see cref="VideoOut.sceVideoOutConfigureOutput"/> or <see cref="VideoOut.sceVideoOutIsOutputSupported"/>.
+/// </summary>
+[StructLayout(LayoutKind.Sequential, Size = 64)]
+public unsafe struct SceVideoOutOutputOptions
+{
+    private fixed uint _internalData[16];
+}
+
+/// <summary>
+/// The current state of a display output, from <see cref="VideoOut.sceVideoOutGetOutputStatus"/>: the
+/// resolution and refresh rate in effect and whether the display is in HDR.
+/// </summary>
+[StructLayout(LayoutKind.Sequential, Size = 48)]
+public unsafe struct SceVideoOutOutputStatus
+{
+    /// <summary>The resolution token in effect.</summary>
+    public uint Resolution;
+
+    /// <summary>The dynamic range in effect: 0 unknown, 1 SDR, 2 HDR.</summary>
+    public uint DynamicRange;
+
+    /// <summary>The refresh rate in effect.</summary>
+    public ulong RefreshRate;
+
+    /// <summary>Status flags; bit 0 set means the output is in HDR.</summary>
+    public ulong Flags;
+
+    private fixed ulong _reserved[3];
+}
+
+/// <summary>
+/// A gamma color-adjustment block for an output. Set the gamma with
+/// <see cref="VideoOut.ColorSettingsSetGamma"/>, then apply it with <see cref="VideoOut.AdjustColor"/>.
+/// </summary>
+[StructLayout(LayoutKind.Sequential, Size = 16)]
+public unsafe struct SceVideoOutColorSettings
+{
+    /// <summary>The gamma for the red, green and blue channels.</summary>
+    public fixed float Gamma[3];
+
+    /// <summary>Option flags.</summary>
+    public uint Option;
+}
+
+/// <summary>
+/// An SDR-to-HDR color-space conversion block for an output. Configure it with the conversion setters,
+/// then apply it with <see cref="VideoOut.AdjustColorSpaceConversion"/>.
+/// </summary>
+[StructLayout(LayoutKind.Sequential, Size = 32)]
+public unsafe struct SceVideoOutColorSpaceConversionSettings
+{
+    private fixed uint _param[8];
+}

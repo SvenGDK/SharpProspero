@@ -37,7 +37,7 @@ public sealed class Checkbox(string text, bool @checked = false, Action<bool>? c
         if (isFocused)
             surface.DrawRect(Bounds.X, Bounds.Y, Bounds.Width, Bounds.Height, theme.Accent);
         string line = (Checked ? "[X] " : "[ ] ") + Text;
-        surface.DrawText(line, Bounds.X + theme.Padding, CenterTextY(Bounds, theme.TextScale), theme.TextScale, theme.Text);
+        theme.DrawClipped(surface, line, Bounds.X + theme.Padding, CenterTextY(Bounds, theme), theme.Text, Bounds.Width - (2 * theme.Padding));
     }
 
     /// <inheritdoc />

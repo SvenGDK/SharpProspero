@@ -111,6 +111,8 @@ public struct AgcTextureDescriptor
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(width, 1);
         ArgumentOutOfRangeException.ThrowIfLessThan(height, 1);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(width, 16384);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(height, 16384);
         // Width less one is split: the low two bits sit at the top of the first word, the high twelve at
         // the start of the second. Height less one is the fourteen bits above the reserved pair.
         uint widthMinusOne = (uint)(width - 1);
@@ -123,6 +125,7 @@ public struct AgcTextureDescriptor
     public void SetDepthOrSlices(int depthOrSlices)
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(depthOrSlices, 1);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(depthOrSlices, 8192);
         Set(ref _w4, 0, 13, (uint)(depthOrSlices - 1));
     }
 
@@ -171,6 +174,10 @@ public struct AgcTextureDescriptor
     /// <summary>The first and last array slice the shader may sample.</summary>
     public void SetArrayRange(int baseSlice, int lastSlice)
     {
+        ArgumentOutOfRangeException.ThrowIfNegative(baseSlice);
+        ArgumentOutOfRangeException.ThrowIfNegative(lastSlice);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(baseSlice, 8191);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(lastSlice, 8191);
         // The base slice sits in the upper half of the depth word; the last slice shares the depth field.
         Set(ref _w4, 16, 13, (uint)baseSlice);
         Set(ref _w4, 0, 13, (uint)lastSlice);
@@ -201,5 +208,44 @@ public struct AgcTextureDescriptor
 
     /// <summary>Whether the surface carries compression metadata.</summary>
     public void SetMetadataEnabled(bool enabled) => Set(ref _w6, 21, 1, enabled ? 1u : 0u);
+
+    /// <summary>
+    /// The minimum level-of-detail clamp, applied after the sampler's own clamp, as unsigned 4.8
+    /// fixed-point (0 to just under 16). It stops the shader from sampling below this level.
+    /// </summary>
+    public void SetMinLodClamp(float minLod) => Set(ref _w1, 8, 12, ToUFixed4_8(minLod));
+
+    /// <summary>Which source channels feed the border-color lookup, as a raw three-bit swizzle value (0 to 7).</summary>
+    public void SetBorderColorTableSwizzle(int swizzle) => Set(ref _w3, 25, 3, (uint)swizzle & 0x7u);
+
+    /// <summary>Whether this is the depth plane of a multi-sampled depth texture, so it aliases correctly.</summary>
+    public void SetMsaaDepthTexture(bool enabled) => Set(ref _w6, 10, 1, enabled ? 1u : 0u);
+
+    /// <summary>The largest block the compressor may leave uncompressed, as a raw two-bit value (0 to 3).</summary>
+    public void SetDccMaxUncompressedBlockSize(int size) => Set(ref _w6, 15, 2, (uint)size & 0x3u);
+
+    /// <summary>The largest block the compressor may produce, as a raw two-bit value (0 to 3).</summary>
+    public void SetDccMaxCompressedBlockSize(int size) => Set(ref _w6, 17, 2, (uint)size & 0x3u);
+
+    /// <summary>Whether the compression metadata is aligned to the memory pipes.</summary>
+    public void SetMetadataPipeAlignment(bool enabled) => Set(ref _w6, 19, 1, enabled ? 1u : 0u);
+
+    /// <summary>Whether the compressor re-compresses on write.</summary>
+    public void SetDccWriteRecompress(bool enabled) => Set(ref _w6, 20, 1, enabled ? 1u : 0u);
+
+    /// <summary>Whether the alpha channel is placed at the most-significant position for compression.</summary>
+    public void SetDccAlphaPosition(bool alphaOnMsb) => Set(ref _w6, 22, 1, alphaOnMsb ? 1u : 0u);
+
+    /// <summary>Whether the compressor applies its color transform. The field is inverted: the value
+    /// 0 applies the transform and 1 disables it, so the enabled flag maps to 0.</summary>
+    public void SetDccColorTransform(bool enabled) => Set(ref _w6, 23, 1, enabled ? 0u : 1u);
+
+    // Converts a level of detail to unsigned 4.8 fixed-point, clamped to the 12-bit range. The scaled
+    // value is truncated toward zero, matching the fixed-point conversion the hardware layer performs.
+    private static uint ToUFixed4_8(float value)
+    {
+        float clamped = Math.Clamp(value, 0f, 4095f / 256f);
+        return (uint)(clamped * 256f) & 0xFFFu;
+    }
 }
 

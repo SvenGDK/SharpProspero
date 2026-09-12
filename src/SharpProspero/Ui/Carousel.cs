@@ -79,12 +79,12 @@ public sealed class Carousel : UiElement
                 surface.DrawRect(tileX, Bounds.Y, tileWidth, tileHeight, theme.Accent);
 
             Color textColor = middle ? theme.Text : theme.TextMuted;
-            DrawCentered(surface, Fit(_items[index], tileWidth - theme.Padding, theme.TextScale), tileX, tileWidth, Bounds.Y, tileHeight, theme.TextScale, textColor);
+            DrawCentered(surface, theme, _items[index], tileX, tileWidth, Bounds.Y, tileHeight, textColor);
         }
 
         string counter = $"{_index + 1} / {count}";
         int counterY = Bounds.Y + tileHeight + theme.Spacing;
-        DrawCentered(surface, counter, Bounds.X, Bounds.Width, counterY, counterHeight, theme.TextScale, theme.TextMuted);
+        DrawCentered(surface, theme, counter, Bounds.X, Bounds.Width, counterY, counterHeight, theme.TextMuted);
     }
 
     /// <inheritdoc />
@@ -118,20 +118,13 @@ public sealed class Carousel : UiElement
         Changed?.Invoke(_index);
     }
 
-    private static void DrawCentered(Surface surface, string text, int x, int width, int y, int height, int scale, Color color)
+    // Draws text centred within (x, width, y, height), shortening it so it never spills past the tile.
+    private static void DrawCentered(Surface surface, UiTheme theme, string text, int x, int width, int y, int height, Color color)
     {
-        int textWidth = Surface.MeasureText(text, scale);
+        string shown = TextLayout.Truncate(theme.Font, text, width);
+        int textWidth = theme.MeasureText(shown);
         int textX = x + (width - textWidth) / 2;
-        int textY = y + (height - BitmapFont.GlyphSize * scale) / 2;
-        surface.DrawText(text, textX, textY, scale, color);
-    }
-
-    private static string Fit(string text, int maxWidth, int scale)
-    {
-        if (Surface.MeasureText(text, scale) <= maxWidth)
-            return text;
-        while (text.Length > 1 && Surface.MeasureText(text + "..", scale) > maxWidth)
-            text = text[..^1];
-        return text + "..";
+        int textY = y + (height - theme.LineHeight) / 2;
+        theme.DrawText(surface, shown, textX, textY, color);
     }
 }

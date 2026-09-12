@@ -14,8 +14,6 @@ namespace SharpProspero.Ui;
 /// <param name="text">The text to show; line breaks in it start a new line.</param>
 public sealed class TextBlock(string text = "") : UiElement
 {
-    private BitmapTextFont? _builtIn;
-
     /// <summary>The text to show. Line breaks start a new line; the rest wraps to the width.</summary>
     public string Text { get; set; } = text ?? "";
 
@@ -42,14 +40,6 @@ public sealed class TextBlock(string text = "") : UiElement
             TextColor ?? theme.Text, Alignment);
     }
 
-    // The built-in font is kept between frames and rebuilt only when the theme's scale changes, so
-    // measuring and drawing every frame allocates nothing.
-    private ITextFont Resolve(UiTheme theme)
-    {
-        if (Font is not null)
-            return Font;
-        if (_builtIn is null || _builtIn.Scale != theme.TextScale)
-            _builtIn = new BitmapTextFont(theme.TextScale);
-        return _builtIn;
-    }
+    // An explicit font wins; otherwise the block draws with the theme's font.
+    private ITextFont Resolve(UiTheme theme) => Font ?? theme.Font;
 }

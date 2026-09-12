@@ -45,7 +45,7 @@ public static unsafe class KernelModuleInstaller
     private const int TssIstBase = 28;
     private const int CopyChunkSize = 0x1000;
     private const int PageSize = 4096;
-    private const int MWaitok = 0x0002;
+    private const int MNowait = 0x0001;
     private const int MaxSymbols = 128;
     private const int InitialBlockSize = 8 * 1024 * 1024;
 
@@ -85,20 +85,49 @@ public static unsafe class KernelModuleInstaller
     public static bool Install(PayloadKernelIo io, ReadOnlySpan<byte> kelfBlob,
         ReadOnlySpan<byte> uelfBlob, uint fw)
     {
-        // ---- Resolve kernel addresses ----
+        // ---- Already-installed gate ----
+        // Defence-in-depth: skip installation if the kekcall channel already
+        // responds to the KEKCALL_CHECK query. A second Install() over a live
+        // kernel module would overwrite IDT/sysent/TSS entries mid-flight and
+        // panic the kernel. The installer entry point also performs this check
+        // before calling Install(); this second check protects direct callers.
+        try
+        {
+            long already = PayloadKekcall.Invoke(-1);
+            if (already == 0)
+            {
+                PayloadCrt.Klog("sp:install:already_loaded\n\0"u8);
+                return true;
+            }
+        }
+        catch
+        {
+            // Kekcall channel not yet available -- first install path.
+        }
 
-        ulong kdb = KernelOffsets.KdataBase(fw);
-        if (kdb == 0) return false;
+        // ---- Initialize trace-based kernel function calling ----
+
+        if (!PayloadKfncall.Setup(io, fw))
+            return false;
+
+        // ---- Resolve kernel addresses ----
+        // Use the exploit-provided kdata_base (ground truth), not the lookup table.
+
+        PayloadCrt.Klog("sp:install:start\n\0"u8);
+        ulong kdb = PayloadEntryPoint.Args->KernelDataBase;
+        if (kdb == 0) { PayloadCrt.Klog("sp:install:kdb:fail\n\0"u8); return false; }
 
         uint fwMm = (fw >> 16) & 0xFFFF;
         ulong sysentsAddr = kdb + KernelOffsets.Sysents(fw);
-        if (sysentsAddr == kdb) return false;
+        if (sysentsAddr == kdb) { PayloadCrt.Klog("sp:install:sysents:fail\n\0"u8); return false; }
         ulong mallocAddr = Abs(kdb, KernelOffsets.Malloc_1001);
         ulong mallocType = Abs(kdb, KernelOffsets.MallocType_1001);
         ulong idtBase = Abs(kdb, KernelOffsets.Idt_1001);
         ulong tssBase = Abs(kdb, KernelOffsets.TssArray_1001);
         ulong pcpuBase = Abs(kdb, KernelOffsets.PcpuArray_1001);
-        ulong pmapStore = Abs(kdb, KernelOffsets.KernelPmapStore_1001);
+        long pmapOff = KernelOffsets.KernelPmapStore(fw);
+        if (pmapOff == 0) return false;
+        ulong pmapStore = Abs(kdb, pmapOff);
         ulong cfiJmpInt3 = Abs(kdb, KernelOffsets.SyscallCfiTableJmpInt3(fw));
         ulong doretiIret = Abs(kdb, KernelOffsets.DoretiIret_1001);
         ulong sysentvecAddr = kdb + KernelOffsets.Sysentvec(fw);
@@ -115,15 +144,23 @@ public static unsafe class KernelModuleInstaller
             percpuIst4[cpu] = io.ReadU64(tss + (ulong)(TssIstBase + Int1IstIndex * 8));
         }
 
-        ulong int1Handler = KernelIdt.ReadGateTarget(io, idtBase, 1);
-        ulong int3Handler = KernelIdt.ReadGateTarget(io, idtBase, 3);
-        ulong int13Handler = KernelIdt.ReadGateTarget(io, idtBase, 13);
+        // Use the original IDT handlers saved by Setup() BEFORE it patched the IDT
+        // for tracing. Reading from the IDT now would return the trace gadget addresses.
+        ulong int1Handler = PayloadKfncall.OriginalInt1Handler;
+        ulong int3Handler = PayloadKfncall.OriginalInt3Handler;
+        ulong int13Handler = PayloadKfncall.OriginalInt13Handler;
 
-        // ---- Step 2: Allocate kernel memory block ----
+        // ---- Step 2: Warmup allocations + main kernel memory block ----
+        PayloadCrt.Klog("sp:install:warmup\n\0"u8);
+        for (int i = 0; i < 0x180; i++)
+            PayloadKfncall.Call(io, sysentsAddr, mallocAddr, 0x100, mallocType, MNowait);
+        PayloadCrt.Klog("sp:install:warmup:done\n\0"u8);
 
+        PayloadCrt.Klog("sp:install:malloc\n\0"u8);
         ulong blockStart = PayloadKfncall.Call(io, sysentsAddr, mallocAddr,
-            (ulong)InitialBlockSize, mallocType, MWaitok);
-        if (blockStart == 0) return false;
+            (ulong)InitialBlockSize, mallocType, MNowait);
+        if (blockStart == 0) { PayloadCrt.Klog("sp:install:malloc:fail\n\0"u8); return false; }
+        PayloadCrt.Klog("sp:install:malloc:ok\n\0"u8);
         ulong blockPos = blockStart;
         ulong blockEnd = blockStart + (ulong)InitialBlockSize;
 
@@ -144,7 +181,7 @@ public static unsafe class KernelModuleInstaller
         // ---- Step 4: Allocate and zero shared area ----
 
         ulong sharedAreaKva;
-        if (compTable - compRaw >= SharedAreaSize)
+        if (compTable - compRaw > SharedAreaSize)
             sharedAreaKva = compTable - SharedAreaSize;
         else
             sharedAreaKva = compTable + ComparisonTableSize;
@@ -164,7 +201,7 @@ public static unsafe class KernelModuleInstaller
 
         // Convert shared area to DMEM-offset physical address
         ulong sharedAreaPhys = KernelPaging.VirtToPhys(io, kernelCr3, dmapBase, sharedAreaKva);
-        if (sharedAreaPhys == 0) return false;
+        if (sharedAreaPhys == ulong.MaxValue) return false;
         ulong sharedAreaDmem = sharedAreaPhys + dmemVirtBase;
 
         // ---- Step 6a: Allocate uelf data buffers ----
@@ -373,7 +410,7 @@ public static unsafe class KernelModuleInstaller
 
                 // Resolve physical address of uelf CR3 for the kelf
                 ulong cr3Phys = KernelPaging.VirtToPhys(io, kernelCr3, dmapBase, cr3Kva);
-                if (cr3Phys == 0) return false;
+                if (cr3Phys == ulong.MaxValue) return false;
 
                 symValues[uelfCr3Idx] = cr3Phys;
                 symValues[uelfEntryIdx] = uelfEntry - uelfBase + uelfVirtBase;
@@ -879,7 +916,9 @@ public static unsafe class KernelModuleInstaller
         ulong pml4iUelf = (uelfVirtBase >> 39) & 511;
         ulong pml4iDmem = (dmemVirtBase >> 39) & 511;
         ulong pdptPhys = KernelPaging.VirtToPhys(io, kernelCr3, dmapBase, pdptKva);
+        if (pdptPhys == ulong.MaxValue) return;
         ulong pdptDmemPhys = KernelPaging.VirtToPhys(io, kernelCr3, dmapBase, pdptDmemKva);
+        if (pdptDmemPhys == ulong.MaxValue) return;
         io.WriteU64(pml4Kva + pml4iUelf * 8, pdptPhys | 7);
         io.WriteU64(pml4Kva + pml4iDmem * 8, pdptDmemPhys | 7);
 
@@ -887,12 +926,14 @@ public static unsafe class KernelModuleInstaller
         ZeroKernel(io, pdptKva, PageSize);
         ulong pdpti = (uelfVirtBase >> 30) & 511;
         ulong pdPhys = KernelPaging.VirtToPhys(io, kernelCr3, dmapBase, pdKva);
+        if (pdPhys == ulong.MaxValue) return;
         io.WriteU64(pdptKva + pdpti * 8, pdPhys | 7);
 
         // Zero PD, wire entry -> PT
         ZeroKernel(io, pdKva, PageSize);
         ulong pdi = (uelfVirtBase >> 21) & 511;
         ulong ptPhys = KernelPaging.VirtToPhys(io, kernelCr3, dmapBase, ptKva);
+        if (ptPhys == ulong.MaxValue) return;
         io.WriteU64(pdKva + pdi * 8, ptPhys | 7);
 
         // Zero PT, fill with physical mappings of the uelf code pages
@@ -901,7 +942,7 @@ public static unsafe class KernelModuleInstaller
         for (ulong va = uelfBase; va < uelfEnd; va += PageSize, ptIdx++)
         {
             ulong pa = KernelPaging.VirtToPhys(io, kernelCr3, dmapBase, va);
-            if (pa == 0) continue;
+            if (pa == ulong.MaxValue) continue;
             io.WriteU64(ptKva + ptIdx * 8, pa | 7);
         }
 
@@ -1043,4 +1084,5 @@ public static unsafe class KernelModuleInstaller
             len -= chunk;
         }
     }
+
 }

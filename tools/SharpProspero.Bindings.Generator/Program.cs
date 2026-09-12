@@ -55,7 +55,7 @@ internal static class Program
 
     private static readonly HashSet<string> KnownVerbs = new(StringComparer.Ordinal)
     {
-        "prx", "stub", "crt", "compat", "nid", "elf", "self", "offsets", "retarget", "sysver", "link", "diff", "gnf", "payload", "shader", "vag",
+        "prx", "stub", "crt", "compat", "nid", "elf", "self", "offsets", "retarget", "sysver", "link", "kmod", "diff", "gnf", "payload", "shader", "vag",
         "modules", "param",
     };
 
@@ -137,6 +137,10 @@ internal static class Program
         // Resolves the symbol graph of a set of objects and archives.
         if (args.Length > 0 && string.Equals(args[0], "link", StringComparison.Ordinal))
             return RunLink(args);
+
+        // Generates kernel module ELF blobs as a C# source file (build-time, like the C Makefile).
+        if (args.Length > 0 && string.Equals(args[0], "kmod", StringComparison.Ordinal))
+            return RunKmod(args);
 
         // Compares the export surfaces of two modules, across firmware versions.
         if (args.Length > 0 && string.Equals(args[0], "diff", StringComparison.Ordinal))
@@ -393,12 +397,16 @@ internal static class Program
         var options = new LinkOptions();
         var exportNames = new List<string>();
         var objectPaths = new List<string>();
+        var sprxExtras = new List<string>();
+        string? kernelSprx = null;
         for (int i = 0; i < args.Length - 1; i++)
         {
             if (args[i] == "--obj") objectPaths.Add(args[i + 1]);
             else if (args[i] == "--lib") options.Archives.Add(args[i + 1]);
             else if (args[i] == "--stub") options.Stubs.Add(args[i + 1]);
             else if (args[i] == "--export") exportNames.Add(args[i + 1]);
+            else if (args[i] == "--sprx") sprxExtras.Add(args[i + 1]);
+            else if (args[i] == "--kernel-sprx") kernelSprx = args[i + 1];
         }
         if (objectPaths.Count == 0)
         {
@@ -462,6 +470,8 @@ internal static class Program
                 // relay to the loader's output slot, plain ret. No embedded prebuilt runtime.
                 if (HasFlag(args, "--diagnostics"))
                     PayloadCrtEmitter.EmitDiagnosticBreadcrumbs = true;
+                if (HasFlag(args, "--return-on-exit"))
+                    PayloadCrtEmitter.ReturnOnExit = true;
                 options.ExtraObjects.Add(ElfObjectReader.Read(PayloadCrtEmitter.BuildStartObject(), "sharpprospero_payload_crt.o"));
             }
             else if (kind == ModuleKind.Executable)
@@ -511,9 +521,16 @@ internal static class Program
                 if (payload)
                 {
                     // A payload starts at its resolver-driven start object; its outside references become
-                    // run-time-resolved names rather than module imports.
+                    // run-time-resolved names rather than module imports. The DT_NEEDED SPRX list is
+                    // built from the sample-declared --sprx items (in order) merged with the canonical
+                    // default set; --kernel-sprx overrides the default kernel module when the sample
+                    // needs libkernel_sys or another kernel SPRX. Extraction happens above; here we
+                    // compose the final list so PayloadWriter emits the correct DT_NEEDED entries.
                     string entry = GetOption(args, "--entry") ?? PayloadCrtEmitter.StartSymbol;
-                    module = PayloadWriter.Write(result, entry);
+                    string[]? neededSprx = (sprxExtras.Count > 0 || kernelSprx is not null)
+                        ? PayloadProfile.BuildNeededSprx(sprxExtras.ToArray(), kernelSprx)
+                        : null;
+                    module = PayloadWriter.Write(result, entry, neededSprx);
                 }
                 else
                 {
@@ -538,6 +555,63 @@ internal static class Program
             Console.Error.WriteLine(ex.Message);
             return 2;
         }
+    }
+
+    // Generates kernel module ELF blobs (kelf + uelf) as a C# source file with static
+    // ReadOnlySpan<byte> arrays. Runs at build time, matching the C reference Makefile which
+    // compiles the kernel module from C source before linking the loader.
+    private static int RunKmod(string[] args)
+    {
+        string outPath = "";
+        string ns = "SampleApp";
+        for (int i = 1; i < args.Length; i++)
+        {
+            if (args[i] == "--out" && i + 1 < args.Length) outPath = args[++i];
+            else if (args[i] == "--namespace" && i + 1 < args.Length) ns = args[++i];
+        }
+        if (string.IsNullOrEmpty(outPath))
+        {
+            Console.Error.WriteLine("kmod: --out <file.cs> required");
+            return 1;
+        }
+
+        var output = KernelModuleWriter.Build();
+        byte[] kelf = output.KelfElf ?? [];
+        byte[] uelf = output.UelfElf ?? [];
+        Console.Error.WriteLine($"kmod: kelf {kelf.Length} bytes, uelf {uelf.Length} bytes");
+
+        var sb = new StringBuilder();
+        sb.AppendLine("// Auto-generated at build time. Do not edit.");
+        sb.AppendLine($"using System;");
+        sb.AppendLine();
+        sb.AppendLine($"namespace {ns};");
+        sb.AppendLine();
+        sb.AppendLine("internal static class KernelModuleBlobs");
+        sb.AppendLine("{");
+        sb.Append("    internal static ReadOnlySpan<byte> Kelf => [");
+        FormatBlobBytes(sb, kelf);
+        sb.AppendLine("];");
+        sb.AppendLine();
+        sb.Append("    internal static ReadOnlySpan<byte> Uelf => [");
+        FormatBlobBytes(sb, uelf);
+        sb.AppendLine("];");
+        sb.AppendLine("}");
+
+        Directory.CreateDirectory(Path.GetDirectoryName(outPath)!);
+        File.WriteAllText(outPath, sb.ToString(), new UTF8Encoding(false));
+        Console.Error.WriteLine($"kmod: wrote {outPath}");
+        return 0;
+    }
+
+    private static void FormatBlobBytes(StringBuilder sb, byte[] data)
+    {
+        for (int i = 0; i < data.Length; i++)
+        {
+            if (i > 0) sb.Append(',');
+            if (i % 32 == 0) { sb.AppendLine(); sb.Append("        "); }
+            sb.Append($"0x{data[i]:X2}");
+        }
+        if (data.Length > 0) { sb.AppendLine(); sb.Append("    "); }
     }
 
     // Compares the export surfaces of two modules: which identifiers one has and the other does not, and

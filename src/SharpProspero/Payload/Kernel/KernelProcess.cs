@@ -1,6 +1,7 @@
 // SharpProspero - a C# SDK for on-device application modules.
 // Copyright (C) 2026 SvenGDK
 
+using SharpProspero.Payload.Posix;
 using System;
 using System.Runtime.InteropServices;
 
@@ -19,13 +20,125 @@ namespace SharpProspero.Payload.Kernel;
 /// jail operations because it follows the same unmanaged call chain that every C payload uses.
 /// </para>
 /// <para>
-/// Every address and field offset comes from <see cref="KernelOffsets"/>.
+/// Every address and field offset comes from <see cref="KernelOffsets"/>. Absolute kernel
+/// addresses are computed at runtime from the loader-provided <c>kdata_base</c> and the
+/// firmware-versioned offset tables, so the same binary works across all supported firmwares.
 /// </para>
 /// </remarks>
 public static unsafe partial class PayloadKernel
 {
     private const int MaxComm = 17;
     private const int MaxTitleId = 10;
+    // Safety cap on the number of processes any single allproc walk visits.
+    // The kernel's process list is well below this in practice; the cap only
+    // exists so a corrupted or looped p_list link terminates the walk instead
+    // of wedging the payload thread. 4096 matches the boundary the checked
+    // walkers use so every allproc walker in this class caps the same way.
+    private const int MaxAllprocIterations = 4096;
+
+    // ---- Firmware version and address cache ----
+
+    private static uint s_firmwareVersion;
+    private static ulong s_kdataBase;
+    private static ulong s_allprocAddr;
+    private static ulong s_rootvnodeAddr;
+    private static ulong s_qaFlagsAddr;
+    private static ulong s_prison0;
+
+    /// <summary>
+    /// Queries the running firmware version via <c>sysctl({CTL_KERN, 46})</c> and caches the
+    /// result. Returns a BCD-encoded version (e.g. <c>0x10010000</c> for FW 10.01).
+    /// </summary>
+    public static uint GetSystemSoftwareVersion()
+    {
+        if (s_firmwareVersion != 0)
+            return s_firmwareVersion;
+        int* mib = stackalloc int[2];
+        mib[0] = 1;   // CTL_KERN
+        mib[1] = 46;  // kern.sdk_version
+        uint version = 0;
+        nuint size = 4;
+        PayloadSysctl.sysctl(mib, 2, &version, &size, null, 0);
+        s_firmwareVersion = version;
+        return version;
+    }
+
+    private static ulong KdataBase
+    {
+        get
+        {
+            if (s_kdataBase == 0)
+                s_kdataBase = PayloadEntryPoint.Args->KernelDataBase;
+            return s_kdataBase;
+        }
+    }
+
+    private static ulong AllprocAddress
+    {
+        get
+        {
+            if (s_allprocAddr == 0)
+                s_allprocAddr = KdataBase + KernelOffsets.Allproc(GetSystemSoftwareVersion());
+            return s_allprocAddr;
+        }
+    }
+
+    private static ulong RootvnodeAddress
+    {
+        get
+        {
+            if (s_rootvnodeAddr == 0)
+                s_rootvnodeAddr = KdataBase + KernelOffsets.Rootvnode(GetSystemSoftwareVersion());
+            return s_rootvnodeAddr;
+        }
+    }
+
+    private static ulong QaFlagsAddress
+    {
+        get
+        {
+            if (s_qaFlagsAddr == 0)
+                s_qaFlagsAddr = KdataBase + KernelOffsets.QaFlags(GetSystemSoftwareVersion());
+            return s_qaFlagsAddr;
+        }
+    }
+
+    /// <summary>
+    /// Finds the <c>prison0</c> address by reading PID 1's credential prison pointer.
+    /// PID 1 (init) is always in the root prison. The result is cached.
+    /// </summary>
+    public static ulong GetPrison0(PayloadKernelIo io)
+    {
+        if (s_prison0 != 0)
+            return s_prison0;
+        ulong proc = io.ReadU64(AllprocAddress);
+        int safety = 0;
+        while (proc != 0 && safety < 4096)
+        {
+            int pid = (int)io.ReadU32(proc + (ulong)KernelOffsets.ProcPid);
+            if (pid == 1)
+            {
+                ulong ucred = io.ReadU64(proc + (ulong)KernelOffsets.ProcUcred);
+                s_prison0 = io.ReadU64(ucred + (ulong)KernelOffsets.UcredPrison);
+                return s_prison0;
+            }
+            proc = io.ReadU64(proc + (ulong)KernelOffsets.ProcList);
+            safety++;
+        }
+        return 0;
+    }
+
+    /// <summary>
+    /// Returns the cached <c>prison0</c> address. If not yet cached, constructs a temporary
+    /// <see cref="PayloadKernelIo"/> from the payload arguments and calls <see cref="GetPrison0(PayloadKernelIo)"/>.
+    /// </summary>
+    public static ulong GetPrison0()
+    {
+        if (s_prison0 != 0)
+            return s_prison0;
+        var io = new PayloadKernelIo(PayloadEntryPoint.Args);
+        return GetPrison0(io);
+    }
 
     /// <summary>
     /// Walks the process list starting at <c>allproc</c> and returns the kernel address of the first
@@ -33,15 +146,17 @@ public static unsafe partial class PayloadKernel
     /// </summary>
     public static ulong FindProcessByTitleId(PayloadKernelIo io, byte* titleId, int titleIdLength)
     {
-        ulong proc = io.ReadU64(KernelOffsets.Allproc1001);
+        ulong proc = io.ReadU64(AllprocAddress);
         byte* buf = stackalloc byte[MaxTitleId + 1];
         buf[MaxTitleId] = 0;
-        while (proc != 0)
+        int safety = 0;
+        while (proc != 0 && safety < MaxAllprocIterations)
         {
             io.Read(proc + (ulong)KernelOffsets.ProcTitleId, buf, MaxTitleId);
             if (MatchName(buf, titleId, titleIdLength))
                 return proc;
             proc = io.ReadU64(proc + (ulong)KernelOffsets.ProcList);
+            safety++;
         }
         return 0;
     }
@@ -52,15 +167,17 @@ public static unsafe partial class PayloadKernel
     /// </summary>
     public static ulong FindProcessByName(PayloadKernelIo io, byte* name, int nameLength)
     {
-        ulong proc = io.ReadU64(KernelOffsets.Allproc1001);
+        ulong proc = io.ReadU64(AllprocAddress);
         byte* comm = stackalloc byte[MaxComm + 1];
         comm[MaxComm] = 0;
-        while (proc != 0)
+        int safety = 0;
+        while (proc != 0 && safety < MaxAllprocIterations)
         {
             io.Read(proc + (ulong)KernelOffsets.ProcComm, comm, MaxComm);
             if (MatchName(comm, name, nameLength))
                 return proc;
             proc = io.ReadU64(proc + (ulong)KernelOffsets.ProcList);
+            safety++;
         }
         return 0;
     }
@@ -83,13 +200,15 @@ public static unsafe partial class PayloadKernel
     /// </summary>
     public static ulong FindProcessByPid(PayloadKernelIo io, int pid)
     {
-        ulong proc = io.ReadU64(KernelOffsets.Allproc1001);
-        while (proc != 0)
+        ulong proc = io.ReadU64(AllprocAddress);
+        int safety = 0;
+        while (proc != 0 && safety < MaxAllprocIterations)
         {
             int p = (int)io.ReadU32(proc + (ulong)KernelOffsets.ProcPid);
             if (p == pid)
                 return proc;
             proc = io.ReadU64(proc + (ulong)KernelOffsets.ProcList);
+            safety++;
         }
         return 0;
     }
@@ -104,7 +223,7 @@ public static unsafe partial class PayloadKernel
     /// </summary>
     public static ulong WalkAllprocForPid(PayloadKernelIo io, int pid)
     {
-        if (!io.TryReadU64(KernelOffsets.Allproc1001, out ulong proc))
+        if (!io.TryReadU64(AllprocAddress, out ulong proc))
             return 0;
         int safety = 0;
         while (proc != 0 && safety < 4096)
@@ -161,7 +280,7 @@ public static unsafe partial class PayloadKernel
         ulong proc = WalkAllprocForPid(io, pid);
         if (proc == 0)
             return false;
-        ulong rootvnode = io.ReadU64(KernelOffsets.Rootvnode1001);
+        ulong rootvnode = io.ReadU64(RootvnodeAddress);
         if (rootvnode == 0)
             return false;
         return JailbreakProcess(io, proc, rootvnode);
@@ -173,7 +292,7 @@ public static unsafe partial class PayloadKernel
     /// </summary>
     public static void RemoveJail(PayloadKernelIo io, ulong proc)
     {
-        ulong rootvnode = io.ReadU64(KernelOffsets.Rootvnode1001);
+        ulong rootvnode = io.ReadU64(RootvnodeAddress);
         ulong filedesc = io.ReadU64(proc + (ulong)KernelOffsets.ProcFd);
         io.WriteU64(filedesc + (ulong)KernelOffsets.FdRdir, rootvnode);
         io.WriteU64(filedesc + (ulong)KernelOffsets.FdJdir, rootvnode);
@@ -190,7 +309,7 @@ public static unsafe partial class PayloadKernel
         io.WriteU32(ucred + (ulong)KernelOffsets.UcredSvuid, 0);
         io.WriteU32(ucred + (ulong)KernelOffsets.UcredRgid, 0);
         io.WriteU32(ucred + (ulong)KernelOffsets.UcredSvgid, 0);
-        io.WriteU64(ucred + (ulong)KernelOffsets.UcredPrison, KernelOffsets.Prison0_1001);
+        io.WriteU64(ucred + (ulong)KernelOffsets.UcredPrison, GetPrison0(io));
         io.WriteU64(ucred + (ulong)KernelOffsets.UcredSceAuthId, 0xFFFF_FFFF_FFFF_FFFF);
         io.WriteU64(ucred + (ulong)KernelOffsets.UcredSceCaps, 0xFFFF_FFFF_FFFF_FFFF);
         io.WriteU64(ucred + (ulong)KernelOffsets.UcredSceCaps + 8, 0xFFFF_FFFF_FFFF_FFFF);
@@ -209,7 +328,7 @@ public static unsafe partial class PayloadKernel
     /// </summary>
     public static ulong GetRootVnode(PayloadKernelIo io)
     {
-        return io.ReadU64(KernelOffsets.Rootvnode1001);
+        return io.ReadU64(RootvnodeAddress);
     }
 
     /// <summary>
@@ -314,11 +433,7 @@ public static unsafe partial class PayloadKernel
     /// </remarks>
     public static uint GetFirmwareVersion(PayloadKernelIo io)
     {
-        // The CRT stores fw_version in a global that __kernel_init populates. Since
-        // we have the pipe primitive, we read the kernel's own copy. The version word
-        // lives at kdata_base + 0x7E4 on FW 10.01 (confirmed via the CRT's
-        // sw_version symbol relative to kdata_base).
-        return io.ReadU32(KernelOffsets.KdataBase1001 + 0x7E4);
+        return GetSystemSoftwareVersion();
     }
 
     /// <summary>
@@ -326,9 +441,7 @@ public static unsafe partial class PayloadKernel
     /// </summary>
     public static void GetQaFlags(PayloadKernelIo io, byte* qaflags)
     {
-        // QA flags are at the KERNEL_ADDRESS_QA_FLAGS offset in the CRT globals.
-        // On FW 10.01, this is kdata_base + 0x7F0 (16 bytes).
-        io.Read(KernelOffsets.KdataBase1001 + 0x7F0, qaflags, 16);
+        io.Read(QaFlagsAddress, qaflags, 16);
     }
 
     /// <summary>
@@ -336,7 +449,7 @@ public static unsafe partial class PayloadKernel
     /// </summary>
     public static void SetQaFlags(PayloadKernelIo io, byte* qaflags)
     {
-        io.Write(KernelOffsets.KdataBase1001 + 0x7F0, qaflags, 16);
+        io.Write(QaFlagsAddress, qaflags, 16);
     }
 
     /// <summary>
@@ -432,7 +545,7 @@ public static unsafe partial class PayloadKernel
         CrtSetUcredSvuid(pid, 0);
         CrtSetUcredRgid(pid, 0);
         CrtSetUcredSvgid(pid, 0);
-        CrtSetUcredPrison(pid, KernelOffsets.Prison0_1001);
+        CrtSetUcredPrison(pid, GetPrison0());
         CrtSetUcredAuthid(pid, 0xFFFF_FFFF_FFFF_FFFF);
         byte* caps = stackalloc byte[16];
         for (int i = 0; i < 16; i++)

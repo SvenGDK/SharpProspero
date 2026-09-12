@@ -1,25 +1,13 @@
-// Kernel extension payload: installs a kernel module that hooks IDT vectors 1/3/13 and the
-// sysent tables to intercept syscalls for auth bypass and crypto emulation, applies binary
-// patches to SceShellCore for DRM/signature bypass, installs persistent DRM type triggers in
-// the application database, launches a ShellUI trophy-patch monitor thread for re-applying
-// patches after rest-mode resume, remounts /system_ex read-write, scans /user/app for
-// mount.lnk files to detect and mount disc images (UFS/PFS/PFSC/exFAT including nested
-// images) via nullfs bind mount, and enters a persistent kqueue-based USB/filesystem event
-// monitor.
-//
-// The payload combines two execution phases into a single binary:
-//   Phase 1 (installer): deploys pre-built kelf (kernel-mode handler) and uelf (user-mode
-//     trampoline) ELF binaries into kernel memory via KernelModuleInstaller, one instance
-//     per CPU, with per-CPU symbol resolution, CR3 page table construction, IDT/TSS patching,
-//     sysent table cloning, and crypto singleton poisoning.
-//   Phase 2 (loader): enables dlsym on the calling process, patches app.db (gated on installer
-//     return), spawns the ShellUI monitor, updates app.db with persistent triggers, mounts disc
-//     images, and enters the USB event monitor loop.
+// Loader payload. Maps the separately-built installer ELF (InstallerBlob) into memory,
+// calls its entry point (which installs the kernel module), then proceeds with the
+// post-install steps: app.db patching (gated on *payloadout == 0), ShellUI trophy-patch
+// monitor thread, /system_ex remount, disc-image mounting, and a persistent USB event loop.
+// The installer binary handles the kekcall liveness check internally and returns early
+// when the kernel module is already loaded from a previous run.
 
 using System;
 using System.Runtime.InteropServices;
 
-using SharpProspero.Link;
 using SharpProspero.Payload;
 using SharpProspero.Payload.Bypass;
 using SharpProspero.Payload.Elf;
@@ -34,17 +22,6 @@ namespace SampleApp;
 
 internal static unsafe class Program
 {
-    // ---- Kekcall call numbers ----
-
-    /// <summary>
-    /// Kekcall liveness check. The CRT translates this value into the 64-bit magic
-    /// <c>0xFFFFFFFF_00000027</c> (KEKCALL_CHECK) passed as the seventh argument to
-    /// <c>getppid</c>. When the kernel module is installed from a previous run, its
-    /// interceptor returns zero. When it is not installed, the real <c>getppid</c>
-    /// returns the parent PID (non-zero).
-    /// </summary>
-    private const int KekcallCheck = -1;
-
     // ---- FreeBSD constants ----
 
     private const int MaxPath = 1024;
@@ -148,31 +125,60 @@ internal static unsafe class Program
         PayloadCrt.Klog("kstuff: firmware version read ok\n\0"u8);
 
         // Read the DMAP base for physical memory access (needed by trophy patcher thread).
-        ulong kdataBase = KernelOffsets.KdataBase(fw);
-        ulong pmapStore = kdataBase + (ulong)KernelOffsets.KernelPmapStore_1001;
+        PayloadCrt.Klog("sp:init:dmap\n\0"u8);
+        ulong kdataBase = pargs->KernelDataBase;
+        long pmapOff = KernelOffsets.KernelPmapStore(fw);
+        if (pmapOff == 0)
+        {
+            PayloadCrt.Klog("kstuff: pmap offset missing for this firmware\n\0"u8);
+            PayloadNotification.SendKernelNotification("kstuff: unsupported firmware for pmap"u8);
+            return -1;
+        }
+        ulong pmapStore = kdataBase + (ulong)pmapOff;
         ulong dmapVirt = io.ReadU64(pmapStore + 32);
         ulong pmCr3 = io.ReadU64(pmapStore + 40);
         s_dmapBase = dmapVirt - pmCr3;
+        PayloadCrt.Klog("sp:init:dmap:ok\n\0"u8);
 
-        // ---- Step 2: Enable dlsym on 5.00+ ----
+        // ---- Step 2: Load and run the installer binary ----
+        // Runs BEFORE dlsym enablement. The installer uses CRT syscalls and kernel
+        // R/W only — no dlsym needed. The dlsym enablement widens eboot segments to
+        // 0..MAX, which marks all addresses as XO text. NativeAOT code does RIP-relative
+        // data reads from .text, so calling the installer after XO widening triggers
+        // SYSTEM_XO_VIOLATION. The original avoids this because its installer is a flat
+        // binary with no RIP-relative data reads.
+        PayloadCrt.Klog("kstuff: loading installer\n\0"u8);
+        if (!InstallerLoader.LoadAndRun(pargs))
+        {
+            PayloadCrt.Klog("kstuff: installer load failed\n\0"u8);
+            return -1;
+        }
+
+        // ---- Step 3: Enable dlsym on 5.00+ ----
         // Widen the eboot segment range so sceKernelDlsym can resolve symbols from the
-        // calling process's own image. Without this, dlsym returns ENOENT for all symbols.
-
+        // calling process's own image. Done AFTER the installer returns so the XO widening
+        // does not affect the installer's NativeAOT code. Needed by app.db patching which
+        // uses dlopen/dlsym to load libsqlite3.sprx.
+        PayloadCrt.Klog("sp:dlsym:getpid\n\0"u8);
         int ownPid = PayloadProcessControl.getpid();
         if (ownPid > 0)
         {
             ulong proc = PayloadKernel.WalkAllprocForPid(io, ownPid);
             if (proc != 0)
             {
+                PayloadCrt.Klog("sp:dlsym:proc\n\0"u8);
                 ulong pDynlib = io.ReadU64(proc + ProcDynlib);
                 if (pDynlib != 0)
                 {
+                    PayloadCrt.Klog("sp:dlsym:dynlib\n\0"u8);
                     ulong dynlibEboot = io.ReadU64(pDynlib);
                     if (dynlibEboot != 0)
                     {
+                        PayloadCrt.Klog("sp:dlsym:eboot\n\0"u8);
                         ulong ebootSegments = io.ReadU64(dynlibEboot + 0x40);
                         if (ebootSegments != 0)
                         {
+                            PayloadCrt.Klog("sp:dlsym:segments\n\0"u8);
                             io.WriteU64(ebootSegments + 0x08, 0);
                             io.WriteU64(ebootSegments + 0x10, 0xFFFF_FFFF_FFFF_FFFF);
                             PayloadCrt.Klog("kstuff: dlsym enabled\n\0"u8);
@@ -182,56 +188,16 @@ internal static unsafe class Program
             }
         }
 
-        // ---- Step 3: Check if already loaded ----
-
-        long pingResult = PayloadKekcall.Invoke(KekcallCheck);
-        bool alreadyLoaded = pingResult == 0;
-        if (alreadyLoaded)
+        // ---- Step 4: Patch App.db ----
+        // Gated on *payloadout == 0, matching the original. The installer leaves
+        // payloadout at its initial value (0) on success or early return.
+        if (*pargs->Payloadout == 0)
         {
-            PayloadCrt.Klog("kstuff: already loaded\n\0"u8);
-            PayloadNotification.SendKernelNotification("kstuff: already loaded"u8);
-        }
-        if (!alreadyLoaded)
-        {
-            PayloadCrt.Klog("kstuff: not yet loaded, proceeding\n\0"u8);
-
-            // ---- Step 4: Install kernel module ----
-
-            ReadOnlySpan<byte> kelfBlob = KernelModuleData.Kelf;
-            ReadOnlySpan<byte> uelfBlob = KernelModuleData.Uelf;
-
-            if (kelfBlob.Length == 0 || uelfBlob.Length == 0)
-            {
-                PayloadCrt.Klog("kstuff: kernel module blobs missing\n\0"u8);
-                PayloadNotification.SendKernelNotification("kstuff: kernel module blobs missing"u8);
-                return -1;
-            }
-
-            PayloadCrt.Klog("kstuff: installing kernel module\n\0"u8);
-
-            bool installed = KernelModuleInstaller.Install(io, kelfBlob, uelfBlob, fw);
-            if (!installed)
-            {
-                PayloadCrt.Klog("kstuff: kernel module install failed\n\0"u8);
-                PayloadNotification.SendKernelNotification("kstuff: kernel module install failed"u8);
-            }
-            else
-            {
-                PayloadCrt.Klog("kstuff: kernel module installed\n\0"u8);
-
-                // ---- Step 5: Patch App.db (gated on first install) ----
-
-                if (pargs->Payloadout == null || *pargs->Payloadout == 0)
-                {
-                    PayloadCrt.Klog("kstuff: patching app.db\n\0"u8);
-                    int patchResult = PatchAppDb();
-                    if (pargs->Payloadout != null)
-                        *pargs->Payloadout = patchResult;
-                }
-            }
+            PayloadCrt.Klog("kstuff: patching app.db\n\0"u8);
+            *pargs->Payloadout = PatchAppDb();
         }
 
-        // ---- Step 6: ShellUI trophy patch monitor ----
+        // ---- Step 5: ShellUI trophy patch monitor ----
         // Spawns a background thread that patches the running SceShellUI process's trophy
         // availability functions, then monitors SceSysCore.elf for fork/exec events and
         // re-applies the patches to new SceShellUI instances after rest-mode resume.
@@ -239,7 +205,7 @@ internal static unsafe class Program
 
         StartShellUiMonitor(io);
 
-        // ---- Step 7: Mount images ----
+        // ---- Step 6: Mount images ----
         // Remounts /system_ex as read-write with the exFAT filesystem driver, scans /user/app
         // for mount.lnk files, mounts referenced disc images (UFS/PFS/PFSC/exFAT) with nested
         // image support, and bind-mounts via nullfs.
@@ -257,7 +223,7 @@ internal static unsafe class Program
             ScanAndMountTitles();
         }
 
-        // ---- Step 8: Success notification ----
+        // ---- Step 7: Success notification ----
 
         PayloadCrt.Klog("kstuff: ready\n\0"u8);
         PayloadNotification.SendKernelNotification("kstuff: ready"u8);
@@ -291,7 +257,7 @@ internal static unsafe class Program
         nint thread = 0;
         fixed (byte* threadName = "shellui_mon\0"u8)
         {
-            int rc = PayloadThread.scePthreadCreate(
+            int rc = PayloadThread.Create(
                 &thread, null, &ShellUiMonitorThreadEntry, null, threadName);
             if (rc == 0)
             {
@@ -314,32 +280,39 @@ internal static unsafe class Program
     [UnmanagedCallersOnly]
     private static void* ShellUiMonitorThreadEntry(void* arg)
     {
-        // Patch the currently running SceShellUI FIRST, before looking for SceSysCore.elf.
+        PayloadCrt.Klog("sp:shellui:thread:start\n\0"u8);
+
         fixed (byte* shellUiName = "SceShellUI\0"u8)
         {
+            PayloadCrt.Klog("sp:shellui:find:pid\n\0"u8);
             int shellUiPid = PayloadSysctl.FindPidByName(shellUiName);
             if (shellUiPid > 0)
             {
+                PayloadCrt.Klog("sp:shellui:patch:start\n\0"u8);
                 PayloadShellUiPatcher.PatchTrophyChecks(s_io, shellUiPid, s_dmapBase, s_fwMajorMinor);
+                PayloadCrt.Klog("sp:shellui:patch:ok\n\0"u8);
                 PayloadCrt.Klog("kstuff: shellui patched\n\0"u8);
             }
             else
             {
+                PayloadCrt.Klog("sp:shellui:patch:nopid\n\0"u8);
                 PayloadCrt.Klog("kstuff: SceShellUI not found for initial patch\n\0"u8);
             }
         }
 
-        // Set up the kqueue monitor for SceSysCore.elf to re-patch future instances.
+        PayloadCrt.Klog("sp:shellui:syscore:find\n\0"u8);
         fixed (byte* sysCoreName = "SceSysCore.elf\0"u8)
         {
             s_sysCorePid = PayloadSysctl.FindPidByName(sysCoreName);
         }
         if (s_sysCorePid <= 0)
         {
+            PayloadCrt.Klog("sp:shellui:syscore:fail\n\0"u8);
             PayloadCrt.Klog("kstuff: SceSysCore.elf not found, monitor skipped\n\0"u8);
             return null;
         }
 
+        PayloadCrt.Klog("sp:shellui:monitor:start\n\0"u8);
         PayloadShellUiMonitor.Run(s_io, s_sysCorePid, s_dmapBase, s_fwMajorMinor);
         return null;
     }
@@ -352,21 +325,20 @@ internal static unsafe class Program
     /// </summary>
     private static int PatchAppDb()
     {
+        PayloadCrt.Klog("sp:appdb:load\n\0"u8);
         PayloadAppDbPatcher.SqliteFunctions fns = PayloadAppDbPatcher.LoadSqlite();
         if (fns.Open == 0)
         {
+            PayloadCrt.Klog("sp:appdb:load:fail\n\0"u8);
             PayloadCrt.Klog("kstuff: sqlite3 load failed, skipping app.db patch\n\0"u8);
             return -1;
         }
+        PayloadCrt.Klog("sp:appdb:load:ok\n\0"u8);
 
-        int result = PayloadAppDbPatcher.PatchDrmType(fns);
-        if (result == 0)
-            PayloadCrt.Klog("kstuff: app.db drm type patched\n\0"u8);
-        else
-            PayloadCrt.Klog("kstuff: app.db drm type patch failed\n\0"u8);
-
-        InstallDrmTriggers(fns);
-        return result;
+        PayloadCrt.Klog("sp:appdb:triggers:start\n\0"u8);
+        int trigResult = InstallDrmTriggers(fns);
+        PayloadCrt.Klog("sp:appdb:triggers:done\n\0"u8);
+        return trigResult;
     }
 
     /// <summary>
@@ -381,7 +353,7 @@ internal static unsafe class Program
     /// </list>
     /// Also performs a bulk update of existing rows in each matching table.
     /// </summary>
-    private static void InstallDrmTriggers(PayloadAppDbPatcher.SqliteFunctions fns)
+    private static int InstallDrmTriggers(PayloadAppDbPatcher.SqliteFunctions fns)
     {
         // Resolve sqlite3_column_text from the already-loaded libsqlite3.sprx.
         byte* libName = stackalloc byte[] {
@@ -393,11 +365,13 @@ internal static unsafe class Program
             (byte)'_', (byte)'c', (byte)'o', (byte)'l', (byte)'u', (byte)'m', (byte)'n',
             (byte)'_', (byte)'t', (byte)'e', (byte)'x', (byte)'t', 0 };
 
+        PayloadCrt.Klog("sp:triggers:dlopen\n\0"u8);
         void* sqliteHandle = PayloadDlfcn.Dlopen(libName, PayloadDlfcn.RtldLazy);
-        if (sqliteHandle == null) return;
+        if (sqliteHandle == null) { PayloadCrt.Klog("sp:triggers:dlopen:fail\n\0"u8); return -1; }
 
+        PayloadCrt.Klog("sp:triggers:dlsym\n\0"u8);
         void* colTextAddr = PayloadDlfcn.Dlsym(sqliteHandle, symColumnText);
-        if (colTextAddr == null) return;
+        if (colTextAddr == null) { PayloadCrt.Klog("sp:triggers:dlsym:fail\n\0"u8); return -1; }
 
         var openFn = (delegate* unmanaged<byte*, nint*, int, nint, int>)fns.Open;
         var prepareFn = (delegate* unmanaged<nint, byte*, int, nint*, byte**, int>)fns.Prepare;
@@ -407,15 +381,16 @@ internal static unsafe class Program
         var closeFn = (delegate* unmanaged<nint, int>)fns.Close;
         var columnTextFn = (delegate* unmanaged<nint, int, byte*>)colTextAddr;
 
-        // Open the database.
+        PayloadCrt.Klog("sp:triggers:open\n\0"u8);
         nint db = 0;
         fixed (byte* dbPath = PayloadAppDbPatcher.AppDbPath)
         {
             if (openFn(dbPath, &db, 2 /* SQLITE_OPEN_READWRITE */, 0) != 0)
-                return;
+            { PayloadCrt.Klog("sp:triggers:open:fail\n\0"u8); return -1; }
         }
+        PayloadCrt.Klog("sp:triggers:open:ok\n\0"u8);
 
-        // Query all table names from sqlite_master.
+        PayloadCrt.Klog("sp:triggers:query\n\0"u8);
         byte* query = stackalloc byte[] {
             (byte)'s', (byte)'e', (byte)'l', (byte)'e', (byte)'c', (byte)'t', (byte)' ',
             (byte)'t', (byte)'b', (byte)'l', (byte)'_', (byte)'n', (byte)'a', (byte)'m',
@@ -430,8 +405,8 @@ internal static unsafe class Program
         nint stmt = 0;
         if (prepareFn(db, query, -1, &stmt, null) != 0)
         {
-            closeFn(db);
-            return;
+            PayloadCrt.Klog("sp:triggers:prepare:fail\n\0"u8);
+            return -1;
         }
 
         byte* sqlBuf = stackalloc byte[4096];
@@ -443,8 +418,8 @@ internal static unsafe class Program
             byte* tblName = columnTextFn(stmt, 0);
             if (tblName == null) continue;
 
-            // Only process tables matching the tbl_iconinfo_* naming convention.
             if (!StartsWith(tblName, "tbl_iconinfo_"u8)) continue;
+            PayloadCrt.Klog("sp:triggers:table\n\0"u8);
 
             int nameLen = StringLength(tblName);
 
@@ -458,9 +433,9 @@ internal static unsafe class Program
             CopyBytes(sqlBuf, ref pos, tblName, nameLen);
             AppendLiteral(sqlBuf, ref pos, " set appDrmType = 5 where titleId = old.titleId; end;"u8);
             sqlBuf[pos] = 0;
-            execFn(db, sqlBuf, 0, 0, null);
+            if (execFn(db, sqlBuf, 0, 0, null) != 0)
+                PayloadCrt.Klog("sp:triggers:exec1:fail\n\0"u8);
 
-            // Trigger 2: after insert when new.appDrmType = 1 -> set to 5.
             pos = 0;
             AppendLiteral(sqlBuf, ref pos, "create trigger if not exists trig_insert_drm_"u8);
             CopyBytes(sqlBuf, ref pos, tblName, nameLen);
@@ -470,20 +445,21 @@ internal static unsafe class Program
             CopyBytes(sqlBuf, ref pos, tblName, nameLen);
             AppendLiteral(sqlBuf, ref pos, " set appDrmType = 5 where titleId = new.titleId; end;"u8);
             sqlBuf[pos] = 0;
-            execFn(db, sqlBuf, 0, 0, null);
+            if (execFn(db, sqlBuf, 0, 0, null) != 0)
+                PayloadCrt.Klog("sp:triggers:exec2:fail\n\0"u8);
 
-            // Bulk update existing rows with appDrmType=1 to 5.
             pos = 0;
             AppendLiteral(sqlBuf, ref pos, "update "u8);
             CopyBytes(sqlBuf, ref pos, tblName, nameLen);
             AppendLiteral(sqlBuf, ref pos, " set appDrmType=5 where appDrmType=1;"u8);
             sqlBuf[pos] = 0;
-            execFn(db, sqlBuf, 0, 0, null);
+            if (execFn(db, sqlBuf, 0, 0, null) != 0)
+                PayloadCrt.Klog("sp:triggers:exec3:fail\n\0"u8);
         }
 
         finalizeFn(stmt);
-        closeFn(db);
         PayloadCrt.Klog("kstuff: app.db triggers installed\n\0"u8);
+        return 0;
     }
 
     // ---- Automount check ----
@@ -507,6 +483,7 @@ internal static unsafe class Program
     /// </summary>
     private static void RemountSystemEx()
     {
+        PayloadCrt.Klog("sp:remount:start\n\0"u8);
         byte* kFrom = stackalloc byte[] { (byte)'f', (byte)'r', (byte)'o', (byte)'m', 0 };
         byte* vFrom = stackalloc byte[] {
             (byte)'/', (byte)'d', (byte)'e', (byte)'v', (byte)'/', (byte)'s', (byte)'s',
@@ -544,7 +521,11 @@ internal static unsafe class Program
         PayloadMount.SetIovecFlag(&iov[10], kAsync, 6);
         PayloadMount.SetIovecFlag(&iov[12], kIgnoreacl, 10);
 
-        PayloadMount.nmount(iov, 14, PayloadMount.MntUpdate);
+        int remountRc = PayloadMount.nmount(iov, 14, PayloadMount.MntUpdate);
+        if (remountRc == 0)
+            PayloadCrt.Klog("sp:remount:done\n\0"u8);
+        else
+            PayloadCrt.Klog("sp:remount:fail\n\0"u8);
     }
 
     // ---- Title scanning and mounting ----
@@ -556,6 +537,7 @@ internal static unsafe class Program
     /// </summary>
     private static void ScanAndMountTitles()
     {
+        PayloadCrt.Klog("sp:scan:start\n\0"u8);
         s_isMounting = true;
 
         // Create base mount directories. Each mkdir is idempotent (EEXIST is ignored).
@@ -606,6 +588,7 @@ internal static unsafe class Program
                 if (ReadMountLink(mountLnkPath, srcPath, MaxPath) != 0)
                     continue;
 
+                PayloadCrt.Klog("sp:scan:title\n\0"u8);
                 BindMountTitle(entry->d_name, nameLen, srcPath);
             }
 
@@ -613,6 +596,7 @@ internal static unsafe class Program
         }
 
         s_isMounting = false;
+        PayloadCrt.Klog("sp:scan:done\n\0"u8);
     }
 
     /// <summary>
@@ -623,17 +607,28 @@ internal static unsafe class Program
     /// </summary>
     private static int ReadMountLink(byte* path, byte* outBuf, int outSize)
     {
+        PayloadCrt.Klog("sp:lnk:open\n\0"u8);
         int fd = PayloadIo.open(path, PayloadFileSystem.O_RDONLY);
-        if (fd < 0) return -1;
+        if (fd < 0)
+        {
+            PayloadCrt.Klog("sp:lnk:fail\n\0"u8);
+            return -1;
+        }
 
         for (int i = 0; i < outSize; i++)
             outBuf[i] = 0;
 
+        PayloadCrt.Klog("sp:lnk:read\n\0"u8);
         long n = PayloadIo.read(fd, outBuf, (nuint)(outSize - 1));
         PayloadIo.close(fd);
 
-        if (n < 0) return -1;
+        if (n < 0)
+        {
+            PayloadCrt.Klog("sp:lnk:fail\n\0"u8);
+            return -1;
+        }
 
+        PayloadCrt.Klog("sp:lnk:ok\n\0"u8);
         return 0;
     }
 
@@ -644,6 +639,7 @@ internal static unsafe class Program
     /// </summary>
     private static void BindMountTitle(byte* titleId, int titleIdLen, byte* srcPath)
     {
+        PayloadCrt.Klog("sp:bind:check\n\0"u8);
         if (AutomountDisabled()) return;
 
         // Build the target path: /system_ex/app/<titleId>
@@ -662,14 +658,17 @@ internal static unsafe class Program
 
         FreeBsdStat st = default;
         if (PayloadFileSystem.stat(checkPath, &st) == 0)
+        {
+            PayloadCrt.Klog("sp:bind:already\n\0"u8);
             return; // Already mounted.
+        }
 
-        // Unmount any partial mount. Failure is expected when the path was never mounted
-        // (EINVAL), so errors are not logged here.
+        PayloadCrt.Klog("sp:bind:unmount\n\0"u8);
         PayloadMount.unmount(dstPath, 0);
 
         // Create the target directory. mkdir returns -1 with EEXIST if it already exists,
         // which is acceptable. Any other failure aborts the mount.
+        PayloadCrt.Klog("sp:bind:mkdir\n\0"u8);
         if (PayloadFileSystem.mkdir(dstPath, 0x1ED) != 0) // 0755
         {
             // Check if the directory exists despite the failure (EEXIST case).
@@ -682,17 +681,20 @@ internal static unsafe class Program
         }
 
         // Attempt to detect and mount a disc image in the source directory.
+        PayloadCrt.Klog("sp:bind:image\n\0"u8);
         byte* mountedSrc = stackalloc byte[MaxPath];
         if (MountSource(srcPath, mountedSrc))
         {
             // Use the mounted image path as the nullfs source.
             if (PayloadMount.MountNullfs(mountedSrc, dstPath) == 0)
             {
+                PayloadCrt.Klog("sp:bind:nullfs:ok\n\0"u8);
                 PayloadCrt.Klog("kstuff: title mounted\n\0"u8);
                 return;
             }
 
             // Nullfs failed: clean up with both PFSC-style and PFS-style unmount.
+            PayloadCrt.Klog("sp:bind:nullfs:fail\n\0"u8);
             // PFSC cleanup: force unmount + rmdir.
             PayloadMount.unmount(mountedSrc, PayloadMount.MntForce);
             PayloadFileSystem.rmdir(mountedSrc);
@@ -706,6 +708,7 @@ internal static unsafe class Program
         }
 
         // No image found or image mount failed: bind-mount the source folder directly.
+        PayloadCrt.Klog("sp:bind:folder\n\0"u8);
         CopyString(mountedSrc, srcPath);
         if (PayloadMount.MountNullfs(mountedSrc, dstPath) == 0)
             PayloadCrt.Klog("kstuff: title mounted (folder)\n\0"u8);
@@ -731,6 +734,7 @@ internal static unsafe class Program
         switch (imgType)
         {
             case PayloadImageMount.ImageType.Ufs:
+                PayloadCrt.Klog("sp:mount:detect:ufs\n\0"u8);
                 if (MountUfsImage(imagePath, mountPoint))
                 {
                     CopyString(outMountedPath, mountPoint);
@@ -739,6 +743,7 @@ internal static unsafe class Program
                 break;
 
             case PayloadImageMount.ImageType.Pfs:
+                PayloadCrt.Klog("sp:mount:detect:pfs\n\0"u8);
                 if (MountPfsImage(imagePath, mountPoint))
                 {
                     CopyString(outMountedPath, mountPoint);
@@ -747,15 +752,23 @@ internal static unsafe class Program
                 break;
 
             case PayloadImageMount.ImageType.Pfsc:
+                PayloadCrt.Klog("sp:mount:detect:pfsc\n\0"u8);
                 if (MountPfscImage(imagePath, mountPoint))
                 {
                     // Scan for nested images inside the PFSC mount.
+                    PayloadCrt.Klog("sp:pfsc:nested:scan\n\0"u8);
                     byte* nestedImage = stackalloc byte[MaxPath];
                     PayloadImageMount.ImageType nestedType =
                         PayloadImageMount.FindImageInDirectory(mountPoint, nestedImage, MaxPath);
 
                     if (nestedType != PayloadImageMount.ImageType.Unknown)
                     {
+                        if (nestedType == PayloadImageMount.ImageType.Ufs)
+                            PayloadCrt.Klog("sp:pfsc:nested:ufs\n\0"u8);
+                        else if (nestedType == PayloadImageMount.ImageType.Pfs)
+                            PayloadCrt.Klog("sp:pfsc:nested:pfs\n\0"u8);
+                        else if (nestedType == PayloadImageMount.ImageType.ExFat)
+                            PayloadCrt.Klog("sp:pfsc:nested:exfat\n\0"u8);
                         byte* nestedMount = stackalloc byte[MaxPath];
                         bool nestedOk = nestedType switch
                         {
@@ -778,6 +791,7 @@ internal static unsafe class Program
                 break;
 
             case PayloadImageMount.ImageType.ExFat:
+                PayloadCrt.Klog("sp:mount:detect:exfat\n\0"u8);
                 if (MountExfatImage(imagePath, mountPoint))
                 {
                     CopyString(outMountedPath, mountPoint);
@@ -801,6 +815,7 @@ internal static unsafe class Program
     {
         // Time-freshness check: skip images that were modified very recently to avoid
         // mounting a file that is still being written (e.g. USB transfer in progress).
+        PayloadCrt.Klog("sp:ufs:stat\n\0"u8);
         FreeBsdStat st = default;
         if (PayloadFileSystem.stat(imagePath, &st) != 0)
             return false;
@@ -811,7 +826,10 @@ internal static unsafe class Program
         ts[1] = 0;
         long clockRc = PayloadCrt.Syscall(232, 0, (long)ts);
         if (clockRc == 0 && ts[0] > 0 && (ts[0] - st.st_mtim_sec) < 12)
+        {
+            PayloadCrt.Klog("sp:ufs:fresh\n\0"u8);
             return false;
+        }
 
         // Build mount point from filename without extension: /data/imgmnt/ufsmnt/<name>
         byte* filename = GetFilenamePointer(imagePath);
@@ -831,9 +849,13 @@ internal static unsafe class Program
             byte* ufsName = stackalloc byte[] {
                 (byte)'u', (byte)'f', (byte)'s', 0 };
             if (FixedBytesEqual(sfs.f_fstypename, ufsName, 3))
+            {
+                PayloadCrt.Klog("sp:ufs:already\n\0"u8);
                 return true; // Already mounted.
+            }
         }
 
+        PayloadCrt.Klog("sp:ufs:mkdir\n\0"u8);
         if (PayloadFileSystem.mkdir(outMountPoint, 0x1FF) != 0) // 0777
         {
             FreeBsdStat mkst = default;
@@ -841,11 +863,17 @@ internal static unsafe class Program
                 return false;
         }
 
+        PayloadCrt.Klog("sp:ufs:md:attach\n\0"u8);
         int unit = PayloadImageMount.MdAttach(imagePath, 512, true, (ulong)st.st_size);
         if (unit < 0)
         {
+            PayloadCrt.Klog("sp:ufs:md:retry\n\0"u8);
             unit = PayloadImageMount.MdAttach(imagePath, 512, false, (ulong)st.st_size);
-            if (unit < 0) return false;
+            if (unit < 0)
+            {
+                PayloadCrt.Klog("sp:ufs:md:fail\n\0"u8);
+                return false;
+            }
         }
 
         // Build device path: /dev/md<unit>
@@ -868,11 +896,20 @@ internal static unsafe class Program
         PayloadMount.SetIovecPair(&iov[4], kFrom, 5, devPath, StringLength(devPath) + 1);
 
         // Try read-write first, fall back to read-only.
+        PayloadCrt.Klog("sp:ufs:nmount:rw\n\0"u8);
         if (PayloadMount.nmount(iov, 6, 0) == 0)
+        {
+            PayloadCrt.Klog("sp:ufs:ok\n\0"u8);
             return true;
+        }
+        PayloadCrt.Klog("sp:ufs:nmount:ro\n\0"u8);
         if (PayloadMount.nmount(iov, 6, PayloadMount.MntReadOnly) == 0)
+        {
+            PayloadCrt.Klog("sp:ufs:ok\n\0"u8);
             return true;
+        }
 
+        PayloadCrt.Klog("sp:ufs:nmount:fail\n\0"u8);
         PayloadImageMount.MdDetach(unit);
         return false;
     }
@@ -898,6 +935,7 @@ internal static unsafe class Program
         outMountPoint[mpos] = 0;
 
         // Clean up any stale mount at this point using PFS-specific unmount.
+        PayloadCrt.Klog("sp:pfs:cleanup\n\0"u8);
         FreeBsdStat stCheck = default;
         if (PayloadFileSystem.stat(outMountPoint, &stCheck) == 0)
         {
@@ -910,6 +948,7 @@ internal static unsafe class Program
             PayloadFileSystem.rmdir(outMountPoint);
         }
 
+        PayloadCrt.Klog("sp:pfs:mkdir\n\0"u8);
         if (PayloadFileSystem.mkdir(outMountPoint, 0x1FF) != 0) // 0777
         {
             FreeBsdStat mkst = default;
@@ -917,6 +956,7 @@ internal static unsafe class Program
                 return false;
         }
 
+        PayloadCrt.Klog("sp:pfs:mount\n\0"u8);
         MountSaveDataOpt opt = default;
         PayloadPfsMount.sceFsInitMountSaveDataOpt(&opt);
 
@@ -930,10 +970,12 @@ internal static unsafe class Program
         int rc = PayloadPfsMount.sceFsMountSaveData(&opt, imagePath, outMountPoint, key);
         if (rc < 0)
         {
+            PayloadCrt.Klog("sp:pfs:fail\n\0"u8);
             PayloadFileSystem.rmdir(outMountPoint);
             return false;
         }
 
+        PayloadCrt.Klog("sp:pfs:ok\n\0"u8);
         return true;
     }
 
@@ -981,6 +1023,7 @@ internal static unsafe class Program
         }
 
         // Get the image file size for the LVD layer descriptor.
+        PayloadCrt.Klog("sp:pfsc:stat\n\0"u8);
         FreeBsdStat st = default;
         if (PayloadFileSystem.stat(imagePath, &st) != 0)
         {
@@ -1024,6 +1067,7 @@ internal static unsafe class Program
             int fd = PayloadIo.open(lvdctlPath, PayloadFileSystem.O_RDWR);
             if (fd < 0) break;
 
+            PayloadCrt.Klog("sp:pfsc:lvd:attach\n\0"u8);
             int rc = PayloadIo.ioctl(fd, DeviceControl.SceLvdIocAttach, &req);
             PayloadIo.close(fd);
 
@@ -1037,12 +1081,17 @@ internal static unsafe class Program
             devPath[dpos] = 0;
 
             // Attempt PFS nmount on the LVD device.
+            PayloadCrt.Klog("sp:pfsc:mount\n\0"u8);
             if (MountPfsOnDevice(devPath, outMountPoint))
+            {
+                PayloadCrt.Klog("sp:pfsc:ok\n\0"u8);
                 return true;
+            }
 
             // This image type didn't work; detach and try the next one.
         }
 
+        PayloadCrt.Klog("sp:pfsc:fail\n\0"u8);
         PayloadFileSystem.rmdir(outMountPoint);
         return false;
     }
@@ -1128,6 +1177,7 @@ internal static unsafe class Program
     /// </summary>
     private static bool MountExfatImage(byte* imagePath, byte* outMountPoint)
     {
+        PayloadCrt.Klog("sp:exfat:stat\n\0"u8);
         // Build mount point from filename without extension: /data/imgmnt/exfatmnt/<name>
         byte* filename = GetFilenamePointer(imagePath);
         byte* mountName = stackalloc byte[256];
@@ -1153,10 +1203,14 @@ internal static unsafe class Program
             byte* exfatName = stackalloc byte[] {
                 (byte)'e', (byte)'x', (byte)'f', (byte)'a', (byte)'t', (byte)'f', (byte)'s', 0 };
             if (FixedBytesEqual(sfs.f_fstypename, exfatName, 7))
+            {
+                PayloadCrt.Klog("sp:exfat:already\n\0"u8);
                 return true; // Already mounted.
+            }
         }
 
         // Path A: md(4) memory disk.
+        PayloadCrt.Klog("sp:exfat:md:attach\n\0"u8);
         FreeBsdStat exSt = default;
         ulong exMediaSize = 0;
         if (PayloadFileSystem.stat(imagePath, &exSt) == 0)
@@ -1170,9 +1224,14 @@ internal static unsafe class Program
             WriteInt(devPath, ref dpos, unit);
             devPath[dpos] = 0;
 
+            PayloadCrt.Klog("sp:exfat:md:nmount\n\0"u8);
             if (NmountExfat(devPath, outMountPoint))
+            {
+                PayloadCrt.Klog("sp:exfat:md:ok\n\0"u8);
                 return true;
+            }
 
+            PayloadCrt.Klog("sp:exfat:md:fail\n\0"u8);
             PayloadImageMount.MdDetach(unit);
         }
 
@@ -1201,6 +1260,7 @@ internal static unsafe class Program
             (byte)'/', (byte)'d', (byte)'e', (byte)'v', (byte)'/', (byte)'l', (byte)'v',
             (byte)'d', (byte)'c', (byte)'t', (byte)'l', 0 };
 
+        PayloadCrt.Klog("sp:exfat:lvd:attach\n\0"u8);
         int lvdFd = PayloadIo.open(lvdctlPath, PayloadFileSystem.O_RDWR);
         if (lvdFd < 0) return false;
 
@@ -1215,9 +1275,14 @@ internal static unsafe class Program
         WriteInt(lvdDevPath, ref ldpos, req.DeviceId);
         lvdDevPath[ldpos] = 0;
 
+        PayloadCrt.Klog("sp:exfat:lvd:nmount\n\0"u8);
         if (NmountExfat(lvdDevPath, outMountPoint))
+        {
+            PayloadCrt.Klog("sp:exfat:lvd:ok\n\0"u8);
             return true;
+        }
 
+        PayloadCrt.Klog("sp:exfat:lvd:fail\n\0"u8);
         return false;
     }
 
@@ -1260,6 +1325,7 @@ internal static unsafe class Program
         PayloadMount.SetIovecFlag(&iov[12], kNoatime, 8);
         PayloadMount.SetIovecFlag(&iov[14], kIgnoreacl, 10);
 
+        PayloadCrt.Klog("sp:exfat:iov\n\0"u8);
         return PayloadMount.nmount(iov, 16, PayloadMount.MntReadOnly) == 0;
     }
 
@@ -1307,7 +1373,7 @@ internal static unsafe class Program
             if (s_isMounting)
                 continue;
 
-            // Settling delay for USB descriptor stabilization.
+            PayloadCrt.Klog("sp:usb:event\n\0"u8);
             PayloadThread.sleep(1);
 
             PayloadCrt.Klog("kstuff: fs event, rescanning titles\n\0"u8);
@@ -1430,32 +1496,159 @@ internal static unsafe class Program
     }
 }
 
+
 /// <summary>
-/// Kernel module ELF binaries built at runtime by the toolchain. The kelf and uelf are
-/// complete ELF64 binaries with PT_LOAD segments, relocation tables, and symbol tables
-/// that the installer's <c>LoadKelf</c> processes to deploy the module into kernel memory.
+/// Maps the installer ELF and calls its entry point. Uses kernel R/W to set
+/// vm_map_entry max_protection (PS5's SYS_mprotect ignores PROT_EXEC — the
+/// SDK's libc mprotect() routes through kernel_mprotect which modifies vm_map
+/// entries directly via copyin).
 /// </summary>
-internal static class KernelModuleData
+internal static unsafe class InstallerLoader
 {
-    private static readonly KernelModuleOutput s_module = KernelModuleWriter.Build();
+    private const ulong InstallerHintAddr = 0x926100000;
+
+    public static bool LoadAndRun(PayloadArgs* pargs)
+    {
+        ReadOnlySpan<byte> elf = InstallerBlob.Data;
+        if (elf.Length < 64)
+        {
+            PayloadCrt.Klog("kstuff: installer blob too small\n\0"u8);
+            return false;
+        }
+
+        fixed (byte* elfPtr = elf)
+        {
+            if (elfPtr[0] != 0x7F || elfPtr[1] != (byte)'E' ||
+                elfPtr[2] != (byte)'L' || elfPtr[3] != (byte)'F')
+            {
+                PayloadCrt.Klog("kstuff: installer: bad elf magic\n\0"u8);
+                return false;
+            }
+
+            Elf64Ehdr* ehdr = (Elf64Ehdr*)elfPtr;
+            Elf64Phdr* phdr = (Elf64Phdr*)(elfPtr + (int)ehdr->Phoff);
+            int phnum = ehdr->Phnum;
+
+            ulong minVaddr = ulong.MaxValue;
+            ulong maxVaddr = 0;
+            for (int i = 0; i < phnum; i++)
+            {
+                if (phdr[i].Vaddr < minVaddr) minVaddr = phdr[i].Vaddr;
+                ulong end = phdr[i].Vaddr + phdr[i].Memsz;
+                if (end > maxVaddr) maxVaddr = end;
+            }
+
+            if (maxVaddr == 0)
+            {
+                PayloadCrt.Klog("kstuff: installer: no loadable segments\n\0"u8);
+                return false;
+            }
+
+            minVaddr = minVaddr & ~0xFFFUL;
+            maxVaddr = (maxVaddr + 0xFFF) & ~0xFFFUL;
+            ulong baseSize = maxVaddr - minVaddr;
+
+            PayloadCrt.Klog("kstuff: installer: mapping\n\0"u8);
+            long mapResult = PayloadCrt.Syscall(477 /* SYS_mmap */,
+                (long)InstallerHintAddr, (long)baseSize,
+                3 /* PROT_READ|PROT_WRITE */,
+                0x1002 /* MAP_PRIVATE|MAP_ANON */,
+                -1, 0);
+            if (mapResult < 0x10000)
+            {
+                PayloadCrt.Klog("kstuff: installer: mmap failed\n\0"u8);
+                return false;
+            }
+
+            byte* basePtr = (byte*)(ulong)mapResult;
+
+            for (int i = 0; i < phnum; i++)
+            {
+                if (phdr[i].Type != 1 /* PT_LOAD */) continue;
+                if (phdr[i].Memsz == 0 || phdr[i].Filesz == 0) continue;
+                byte* dst = basePtr + (int)phdr[i].Vaddr;
+                byte* src = elfPtr + (int)phdr[i].Offset;
+                int filesz = (int)phdr[i].Filesz;
+                for (int j = 0; j < filesz; j++)
+                    dst[j] = src[j];
+            }
+
+            // Use kernel R/W to set vm_map_entry max_protection for executable
+            // segments. SYS_mprotect (syscall 74) ignores PROT_EXEC on PS5.
+            PayloadKernelIo io = new(pargs);
+            for (int i = 0; i < phnum; i++)
+            {
+                if (phdr[i].Type != 1 /* PT_LOAD */ || phdr[i].Memsz == 0) continue;
+                ulong segAddr = (ulong)basePtr + phdr[i].Vaddr;
+                ulong segSize = (phdr[i].Memsz + 0xFFF) & ~0xFFFUL;
+                int prot = 0;
+                if ((phdr[i].Flags & 1) != 0) prot |= 4;
+                if ((phdr[i].Flags & 2) != 0) prot |= 2;
+                if ((phdr[i].Flags & 4) != 0) prot |= 1;
+
+                if ((prot & 4) != 0)
+                {
+                    KernelSetVmemProtection(io, pargs, segAddr, segSize, (byte)prot);
+                }
+                PayloadCrt.Syscall(74 /* SYS_mprotect */, (long)segAddr, (long)segSize, prot);
+            }
+
+            PayloadCrt.Klog("kstuff: installer: calling entry\n\0"u8);
+            ulong entryAddr = (ulong)basePtr + ehdr->Entry;
+            var entry = (delegate* unmanaged<PayloadArgs*, void>)entryAddr;
+            entry(pargs);
+
+            PayloadCrt.Klog("kstuff: installer: returned\n\0"u8);
+            return true;
+        }
+    }
 
     /// <summary>
-    /// The kelf (kernel-mode handler) ELF binary. Contains the IDT 1/3/13 entry stubs,
-    /// the main syscall dispatcher, mailbox handlers for fpkg/fself/npdrm bypass, the
-    /// CCP crypto chain walker with XTS and HMAC emulation, the kekcall interface, the
-    /// fake key store, debug register management, and the syscall fix handlers.
-    ///
-    /// Loaded once per CPU into kernel heap memory by KernelModuleInstaller.Install.
-    /// Each instance receives per-CPU symbol values (PCPU address, IST slots, TSS base)
-    /// resolved at load time.
+    /// Sets vm_map_entry.max_protection for a memory range by walking the kernel's
+    /// vm_map via kernel R/W. This is the equivalent of the SDK's kernel_mprotect /
+    /// kernel_set_vmem_protection which modifies vm_map entries directly via copyin.
     /// </summary>
-    public static ReadOnlySpan<byte> Kelf => s_module.KelfElf;
+    private static void KernelSetVmemProtection(PayloadKernelIo io, PayloadArgs* pargs,
+        ulong addr, ulong len, byte prot)
+    {
+        int ownPid = (int)PayloadCrt.Syscall(20 /* SYS_getpid */, 0);
+        ulong proc = PayloadKernel.WalkAllprocForPid(io, ownPid);
+        if (proc == 0) return;
 
-    /// <summary>
-    /// The uelf (user-mode trampoline) ELF binary. Provides a CR3-switched execution
-    /// context for the kelf handlers that need user-accessible direct physical memory
-    /// mapping. The installer builds a private set of page tables (PML4/PDPT/PD/PT) for
-    /// each uelf instance and stores the CR3 physical address in the kelf's data section.
-    /// </summary>
-    public static ReadOnlySpan<byte> Uelf => s_module.UelfElf;
+        // proc + 0x200 = p_vmspace
+        ulong vmspace = io.ReadU64(proc + KernelOffsets.ProcVmspace);
+        if (vmspace == 0) return;
+
+        // vmspace + 0x1d0 = pointer to the first vm_map_entry. The SDK's
+        // kernel_get_vmem_entry reads directly from this offset.
+        ulong firstEntry = io.ReadU64(vmspace + 0x1d0);
+        if (firstEntry == 0) return;
+        ulong entry = firstEntry;
+
+        ulong endAddr = addr + len;
+        bool foundMatch = false;
+
+        for (int iter = 0; iter < 4096; iter++)
+        {
+            if (entry == 0) break;
+
+            ulong entryStart = io.ReadU64(entry + 0x20);
+            ulong entryEnd = io.ReadU64(entry + 0x28);
+
+            if (entryStart >= endAddr)
+            {
+                if (foundMatch) break;
+            }
+            else if (entryEnd > addr)
+            {
+                foundMatch = true;
+                byte protByte = prot;
+                io.Write(entry + 0x64, &protByte, 1);
+            }
+
+            ulong next = io.ReadU64(entry + 0x08);
+            if (next == entry || next == firstEntry || next == 0) break;
+            entry = next;
+        }
+    }
 }

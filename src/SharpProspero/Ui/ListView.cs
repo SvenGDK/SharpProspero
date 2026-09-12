@@ -122,7 +122,7 @@ public sealed class ListView : UiElement
                 if (isFocused)
                     surface.DrawRect(row.X, row.Y, row.Width, row.Height, theme.Accent);
             }
-            surface.DrawText(_items[i], row.X + theme.Padding, CenterTextY(row, theme.TextScale), theme.TextScale, theme.Text);
+            theme.DrawClipped(surface, _items[i], row.X + theme.Padding, CenterTextY(row, theme), theme.Text, row.Width - (2 * theme.Padding));
         }
     }
 

@@ -21,15 +21,60 @@ public static unsafe partial class PayloadThread
     private const string LibC = "libc";
     private const string LibKernel = "libkernel";
 
+    private const nuint ManagedThreadStackSize = 0x100000; // 1 MB
+
     /// <summary>
-    /// Creates a new thread. The thread starts executing <paramref name="entry"/> immediately.
+    /// Creates a thread with the per-thread control block that managed code requires.
+    /// The thread's FSBASE is set to a fresh control block before the entry point runs,
+    /// so GC transitions, exception handling, and stack canary checks work on the new
+    /// thread. Optionally sets a thread name for process listings and debug output.
     /// </summary>
     /// <param name="thread">On success, receives the thread handle.</param>
     /// <param name="attr">Thread attributes, or null for defaults.</param>
     /// <param name="entry">The thread entry point; receives <paramref name="arg"/> and returns a pointer.</param>
     /// <param name="arg">Argument passed to <paramref name="entry"/>.</param>
     /// <param name="name">A NUL-terminated UTF-8 thread name, or null.</param>
-    /// <returns>Zero on success, or a negative error code.</returns>
+    /// <returns>Zero on success, or a non-zero error code.</returns>
+    public static int Create(
+        nint* thread, void* attr, delegate* unmanaged<void*, void*> entry, void* arg, byte* name = null)
+    {
+        bool ownAttr = attr == null;
+        byte* attrBuf = stackalloc byte[64];
+        if (ownAttr)
+        {
+            scePthreadAttrInit((nint)attrBuf);
+            scePthreadAttrSetstacksize((nint)attrBuf, ManagedThreadStackSize);
+            attr = attrBuf;
+        }
+
+        int rc = pthread_create(thread, attr, entry, arg);
+
+        if (ownAttr)
+            scePthreadAttrDestroy((nint)attrBuf);
+
+        if (rc == 0 && name != null)
+            scePthreadRename(*thread, name);
+        return rc;
+    }
+
+    [LibraryImport(LibC, EntryPoint = "pthread_create")]
+    private static partial int pthread_create(
+        nint* thread, void* attr, delegate* unmanaged<void*, void*> entry, void* arg);
+
+    [LibraryImport(LibKernel)]
+    private static partial int scePthreadAttrInit(nint attr);
+
+    [LibraryImport(LibKernel)]
+    private static partial int scePthreadAttrSetstacksize(nint attr, nuint stacksize);
+
+    [LibraryImport(LibKernel)]
+    private static partial int scePthreadAttrDestroy(nint attr);
+
+    /// <summary>
+    /// Creates a new operating-system thread directly, without the per-thread control block
+    /// that managed code requires. Only use this for threads that will never call managed
+    /// code. For threads that run managed entry points, use <see cref="Create"/> instead.
+    /// </summary>
     [LibraryImport(LibKernel)]
     public static partial int scePthreadCreate(
         nint* thread, void* attr, delegate* unmanaged<void*, void*> entry, void* arg, byte* name);

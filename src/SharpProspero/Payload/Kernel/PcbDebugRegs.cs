@@ -73,10 +73,12 @@ public static unsafe class PcbDebugRegs
                 io.WriteU64(drBase + 32, dbregs[6]);
                 io.WriteU64(drBase + 40, dbregs[7]);
 
-                // Set PCB_DBREGS (bit 1) in pcb_flags. The field is u_int (32-bit).
-                if (io.TryReadU32(pcb + (ulong)flagsOffset, out uint flags))
+                // Set PCB_DBREGS (bit 1) in pcb_flags. The field is u_long (64-bit)
+                // on amd64; a 32-bit write here would truncate the upper half and lose
+                // PCB_FPUINITDONE (bit 8) and other flags the kernel expects to persist.
+                if (io.TryReadU64(pcb + (ulong)flagsOffset, out ulong flags))
                 {
-                    io.WriteU32(pcb + (ulong)flagsOffset, flags | KernelOffsets.PcbDbregsFlag);
+                    io.WriteU64(pcb + (ulong)flagsOffset, flags | KernelOffsets.PcbDbregsFlag);
                     armed++;
                 }
             }

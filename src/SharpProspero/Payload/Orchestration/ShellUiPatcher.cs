@@ -56,6 +56,12 @@ public static unsafe class PayloadShellUiPatcher
             PayloadThread.usleep(RetryDelayUs);
         }
 
+        if (fn1 == 0)
+        {
+            PayloadCrt.Klog("sp:trophy:lib1:fail\n\0"u8);
+            return false;
+        }
+
         ulong fn2 = 0;
         for (int i = 0; i < RetryCount; i++)
         {
@@ -69,27 +75,37 @@ public static unsafe class PayloadShellUiPatcher
             PayloadThread.usleep(RetryDelayUs);
         }
 
-        if (fn1 == 0 && fn2 == 0) return false;
+        if (fn2 == 0)
+        {
+            PayloadCrt.Klog("sp:trophy:lib2:fail\n\0"u8);
+            return false;
+        }
 
-        // Patch: mov byte ptr [rdi], 0; xor eax, eax; ret
         byte* patch = stackalloc byte[] { 0xC6, 0x07, 0x00, 0x31, 0xC0, 0xC3 };
         bool ok = true;
 
         ulong cr3 = KernelPaging.GetProcessCr3(io, shellUiPid, fwMajorMinor);
-        if (cr3 == 0) return false;
+        if (cr3 == 0)
+        {
+            PayloadCrt.Klog("sp:trophy:cr3:fail\n\0"u8);
+            return false;
+        }
 
-        if (fn1 != 0)
+        byte* tmp1 = stackalloc byte[6];
+        if (PayloadDebug.mdbg_copyout(shellUiPid, (nint)fn1, tmp1, 6) != 0)
         {
-            byte* tmp1 = stackalloc byte[6];
-            PayloadDebug.mdbg_copyout(shellUiPid, (nint)fn1, tmp1, 6);
-            ok &= KernelPaging.PhysCopyin(io, cr3, dmapBase, fn1, patch, 6);
+            PayloadCrt.Klog("sp:trophy:fault1:fail\n\0"u8);
+            return false;
         }
-        if (fn2 != 0)
+        ok &= KernelPaging.PhysCopyin(io, cr3, dmapBase, fn1, patch, 6);
+
+        byte* tmp2 = stackalloc byte[6];
+        if (PayloadDebug.mdbg_copyout(shellUiPid, (nint)fn2, tmp2, 6) != 0)
         {
-            byte* tmp2 = stackalloc byte[6];
-            PayloadDebug.mdbg_copyout(shellUiPid, (nint)fn2, tmp2, 6);
-            ok &= KernelPaging.PhysCopyin(io, cr3, dmapBase, fn2, patch, 6);
+            PayloadCrt.Klog("sp:trophy:fault2:fail\n\0"u8);
+            return false;
         }
+        ok &= KernelPaging.PhysCopyin(io, cr3, dmapBase, fn2, patch, 6);
 
         return ok;
     }

@@ -16,7 +16,7 @@ namespace SharpProspero.Payload.Posix;
 /// <list type="bullet">
 /// <item><description><c>CTL_KERN = 1</c></description></item>
 /// <item><description><c>KERN_PROC = 14</c></description></item>
-/// <item><description><c>KERN_PROC_PROC = 8</c> (all processes, one per process group leader)</description></item>
+/// <item><description><c>KERN_PROC_PID = 1</c> (single process by PID)</description></item>
 /// </list>
 /// </remarks>
 public static unsafe partial class PayloadSysctl
@@ -29,7 +29,10 @@ public static unsafe partial class PayloadSysctl
     /// <summary>Second-level MIB: process information.</summary>
     public const int KernProc = 14;
 
-    /// <summary>Third-level MIB: all processes (one entry per process group leader).</summary>
+    /// <summary>Third-level MIB: single process by PID.</summary>
+    public const int KernProcPid = 1;
+
+    /// <summary>Third-level MIB: all processes.</summary>
     public const int KernProcProc = 8;
 
     /// <summary>Mount wait flag for <see cref="getmntinfo"/>.</summary>
@@ -68,52 +71,72 @@ public static unsafe partial class PayloadSysctl
         throw new System.PlatformNotSupportedException(
             "getmntinfo is not exported by any SPRX module. Use sysctl or getvfsstat instead.");
 
-    /// <summary>Third-level MIB: all processes (one entry per pid).</summary>
-    public const int KernProcPid = 0;
-
     /// <summary>
-    /// Finds the process identifier of a running process by its command name.
+    /// Finds the process identifier of a running process by its thread name. Queries all
+    /// processes via <c>KERN_PROC_PROC</c> in a single sysctl call and walks the result,
+    /// returning the last match (excluding the caller's own PID).
     /// </summary>
-    /// <param name="name">The NUL-terminated process command name to search for.</param>
-    /// <returns>The pid of the first matching process, or -1 if not found.</returns>
+    /// <param name="name">The NUL-terminated thread name to search for.</param>
+    /// <returns>The PID of the last matching process, or -1 if not found.</returns>
     public static int FindPidByName(byte* name)
     {
-        int* mib = stackalloc int[] { CtlKern, KernProc, KernProcProc };
-        nuint len = 0;
-
-        if (sysctl(mib, 3, null, &len, null, 0) != 0 || len == 0)
-            return -1;
-
-        byte* buf = stackalloc byte[(int)(len < 65536 ? len : 65536)];
-        nuint actualLen = (nuint)(len < 65536 ? len : 65536);
-        if (sysctl(mib, 3, buf, &actualLen, null, 0) != 0)
-            return -1;
-
-        // Walk the kinfo_proc array. On FreeBSD, ki_pid is at offset 72 (int32) and
-        // ki_comm is at offset 447 (char[20]). Each kinfo_proc is 1088 bytes on this platform.
-        const int KinfoSize = 1088;
+        const int KiStructSizeOffset = 0;
         const int KiPidOffset = 72;
-        const int KiCommOffset = 447;
-        const int KiCommMax = 20;
+        const int KiTdnameOffset = 447;
+        const int KiTdnameMax = 16;
 
-        int count = (int)(actualLen / KinfoSize);
-        for (int i = 0; i < count; i++)
+        int nameLen = 0;
+        while (nameLen < KiTdnameMax && name[nameLen] != 0) nameLen++;
+
+        int myPid = (int)PayloadCrt.Syscall(20, 0);
+
+        int* mib = stackalloc int[4];
+        mib[0] = CtlKern;
+        mib[1] = KernProc;
+        mib[2] = KernProcProc;
+        mib[3] = 0;
+
+        nuint totalSize = 0;
+        if (sysctl(mib, 4, null, &totalSize, null, 0) != 0)
+            return -1;
+
+        totalSize += 4096;
+        long mapResult = PayloadCrt.Syscall(477, 0, (long)totalSize, 3, 0x1002, -1, 0);
+        if (mapResult == -1) return -1;
+        byte* buf = (byte*)(ulong)mapResult;
+
+        nuint actualSize = totalSize;
+        if (sysctl(mib, 4, buf, &actualSize, null, 0) != 0)
         {
-            byte* entry = buf + i * KinfoSize;
-            byte* comm = entry + KiCommOffset;
-            int nameLen = 0;
-            while (nameLen < KiCommMax && name[nameLen] != 0) nameLen++;
-
-            bool match = true;
-            for (int j = 0; j < nameLen; j++)
-            {
-                if (comm[j] != name[j]) { match = false; break; }
-            }
-            if (match && comm[nameLen] == 0)
-            {
-                return *(int*)(entry + KiPidOffset);
-            }
+            PayloadCrt.Syscall(73, mapResult, (long)totalSize);
+            return -1;
         }
-        return -1;
+
+        int matched = -1;
+        nuint offset = 0;
+        while (offset < actualSize)
+        {
+            byte* entry = buf + offset;
+            int structSize = *(int*)(entry + KiStructSizeOffset);
+            if (structSize <= 0) break;
+
+            int pid = *(int*)(entry + KiPidOffset);
+            if (pid != myPid)
+            {
+                byte* tdname = entry + KiTdnameOffset;
+                bool match = true;
+                for (int j = 0; j < nameLen; j++)
+                {
+                    if (tdname[j] != name[j]) { match = false; break; }
+                }
+                if (match && (nameLen >= KiTdnameMax || tdname[nameLen] == 0))
+                    matched = pid;
+            }
+
+            offset += (nuint)structSize;
+        }
+
+        PayloadCrt.Syscall(73, mapResult, (long)totalSize);
+        return matched;
     }
 }

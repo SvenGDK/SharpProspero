@@ -36,8 +36,8 @@ public sealed class Button(string text, Action? activated = null) : UiElement
         surface.FillRect(Bounds.X, Bounds.Y, Bounds.Width, Bounds.Height, isFocused ? theme.PanelFocused : theme.Panel);
         if (isFocused)
             surface.DrawRect(Bounds.X, Bounds.Y, Bounds.Width, Bounds.Height, theme.Accent);
-        surface.DrawText(Text, Bounds.X + theme.Padding, CenterTextY(Bounds, theme.TextScale),
-            theme.TextScale, Enabled ? theme.Text : theme.TextMuted);
+        theme.DrawClipped(surface, Text, Bounds.X + theme.Padding, CenterTextY(Bounds, theme),
+            Enabled ? theme.Text : theme.TextMuted, Bounds.Width - (2 * theme.Padding));
     }
 
     /// <inheritdoc />

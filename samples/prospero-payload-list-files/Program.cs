@@ -23,17 +23,17 @@ internal static unsafe class Program
         var io = new PayloadKernelIo(pargs);
 
         // Save the current rootdir, then set it to the kernel root vnode.
-        ulong rootvnode = io.ReadU64(KernelOffsets1001.Rootvnode);
+        ulong rootvnode = PayloadKernel.GetRootVnode(io);
         int pid = PayloadProcessControl.getpid();
         ulong proc = PayloadKernel.FindProcessByPid(io, pid);
         if (proc == 0)
             return -2;
 
-        ulong filedesc = io.ReadU64(proc + (ulong)KernelOffsets1001.ProcFd);
-        ulong savedRootdir = io.ReadU64(filedesc + (ulong)KernelOffsets1001.FdRdir);
+        ulong filedesc = io.ReadU64(proc + (ulong)KernelOffsets.ProcFd);
+        ulong savedRootdir = io.ReadU64(filedesc + (ulong)KernelOffsets.FdRdir);
 
         // Escape jail: set rootdir to kernel's root vnode.
-        io.WriteU64(filedesc + (ulong)KernelOffsets1001.FdRdir, rootvnode);
+        io.WriteU64(filedesc + (ulong)KernelOffsets.FdRdir, rootvnode);
 
         // Enumerate root directory.
         fixed (byte* root = "/\0"u8)
@@ -42,7 +42,7 @@ internal static unsafe class Program
         }
 
         // Restore the original rootdir.
-        io.WriteU64(filedesc + (ulong)KernelOffsets1001.FdRdir, savedRootdir);
+        io.WriteU64(filedesc + (ulong)KernelOffsets.FdRdir, savedRootdir);
 
         return 0;
     }

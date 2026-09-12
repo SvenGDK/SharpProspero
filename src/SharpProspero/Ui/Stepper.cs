@@ -64,8 +64,8 @@ public sealed class Stepper : UiElement
         if (isFocused)
             surface.DrawRect(Bounds.X, Bounds.Y, Bounds.Width, Bounds.Height, theme.Accent);
 
-        int textY = CenterTextY(Bounds, theme.TextScale);
-        surface.DrawText(Text, Bounds.X + theme.Padding, textY, theme.TextScale, theme.Text);
+        int textY = CenterTextY(Bounds, theme);
+        theme.DrawClipped(surface, Text, Bounds.X + theme.Padding, textY, theme.Text, Bounds.Width - (2 * theme.Padding));
 
         // Drawn with characters the font has: it covers printable text only and folds anything else to
         // a blank, so both ends were drawn blank and there was no telling a value that can still move
@@ -73,8 +73,13 @@ public sealed class Stepper : UiElement
         string left = _value > Minimum ? "<" : " ";
         string right = _value < Maximum ? ">" : " ";
         string shown = left + " " + (Format?.Invoke(_value) ?? _value.ToString()) + " " + right;
-        int width = Surface.MeasureText(shown, theme.TextScale);
-        surface.DrawText(shown, Bounds.X + Bounds.Width - theme.Padding - width, textY, theme.TextScale, theme.Text);
+        int width = theme.MeasureText(shown);
+        int room = Bounds.Right - theme.Padding - (Bounds.X + theme.Padding + theme.MeasureText(Text) + theme.Padding);
+        if (room > 0)
+        {
+            int shownWidth = width < room ? width : room;
+            theme.DrawClipped(surface, shown, Bounds.Right - theme.Padding - shownWidth, textY, theme.Text, shownWidth);
+        }
     }
 
     /// <inheritdoc />

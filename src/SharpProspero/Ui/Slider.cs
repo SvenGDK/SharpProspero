@@ -53,14 +53,15 @@ public sealed class Slider : UiElement
         if (isFocused)
             surface.DrawRect(Bounds.X, Bounds.Y, Bounds.Width, Bounds.Height, theme.Accent);
 
-        int textY = CenterTextY(Bounds, theme.TextScale);
-        surface.DrawText(Text, Bounds.X + theme.Padding, textY, theme.TextScale, theme.Text);
+        int textY = CenterTextY(Bounds, theme);
+        theme.DrawClipped(surface, Text, Bounds.X + theme.Padding, textY, theme.Text, Bounds.Width - (2 * theme.Padding));
 
         string valueText = Value.ToString("0.##");
-        int valueWidth = Surface.MeasureText(valueText, theme.TextScale);
-        surface.DrawText(valueText, Bounds.X + Bounds.Width - theme.Padding - valueWidth, textY, theme.TextScale, theme.Text);
+        int valueWidth = theme.MeasureText(valueText);
+        int valueShown = valueWidth < (Bounds.Width - (2 * theme.Padding)) ? valueWidth : Bounds.Width - (2 * theme.Padding);
+        theme.DrawClipped(surface, valueText, Bounds.Right - theme.Padding - valueShown, textY, theme.Text, valueShown);
 
-        int labelWidth = Surface.MeasureText(Text, theme.TextScale);
+        int labelWidth = theme.MeasureText(Text);
         int trackX0 = Bounds.X + theme.Padding + labelWidth + theme.Padding;
         int trackX1 = Bounds.X + Bounds.Width - theme.Padding * 2 - valueWidth;
         int trackY = Bounds.Y + Bounds.Height / 2;

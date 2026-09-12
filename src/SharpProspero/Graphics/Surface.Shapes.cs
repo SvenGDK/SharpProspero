@@ -158,10 +158,12 @@ public readonly unsafe partial struct Surface
             sweep = MathF.Tau;
         bool fullTurn = sweep >= MathF.Tau - 1e-4f;
 
-        int x0 = Math.Max(0, cx - outerRadius);
-        int y0 = Math.Max(0, cy - outerRadius);
-        int x1 = Math.Min(Width - 1, cx + outerRadius);
-        int y1 = Math.Min(Height - 1, cy + outerRadius);
+        // Combine centre and radius in 64-bit so an extreme centre or radius cannot wrap the scan
+        // rectangle and silently skip pixels that are actually on the surface.
+        int x0 = (int)Math.Max(0L, (long)cx - outerRadius);
+        int y0 = (int)Math.Max(0L, (long)cy - outerRadius);
+        int x1 = (int)Math.Min(Width - 1L, (long)cx + outerRadius);
+        int y1 = (int)Math.Min(Height - 1L, (long)cy + outerRadius);
 
         for (int y = y0; y <= y1; y++)
         {

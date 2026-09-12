@@ -122,7 +122,7 @@ public static unsafe class PayloadImageMount
         if (fd < 0) return -1;
 
         LvdIoctlDetach detach = default;
-        detach.DeviceId = (uint)deviceId;
+        detach.DeviceId = deviceId;
 
         int rc = PayloadIo.ioctl(fd, DeviceControl.SceLvdIocDetach, &detach);
         PayloadIo.close(fd);

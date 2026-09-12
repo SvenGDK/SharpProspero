@@ -1,0 +1,42 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <SharpProsperoRoot Condition="'$(SharpProsperoRoot)' == ''">$(SHARPPROSPERO_ROOT)</SharpProsperoRoot>
+  </PropertyGroup>
+
+  <Import Project="$(SharpProsperoRoot)\build\Prospero.Payload.props" />
+
+  <PropertyGroup>
+    <RootNamespace>InstallerApp</RootNamespace>
+    <AssemblyName>InstallerApp</AssemblyName>
+    <TargetFramework>net10.0</TargetFramework>
+    <LangVersion>14.0</LangVersion>
+    <Nullable>enable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="$(SharpProsperoRoot)\src\SharpProspero\SharpProspero.csproj" />
+  </ItemGroup>
+
+  <!-- The installer uses libkernel_sys (not libkernel_web) and only needs libc. -->
+  <PropertyGroup>
+    <ProsperoKernelSprx>libkernel_sys.sprx</ProsperoKernelSprx>
+    <ProsperoReturnOnExit>true</ProsperoReturnOnExit>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProsperoSprx Include="libSceLibcInternal" />
+  </ItemGroup>
+
+  <!-- Generate kernel module ELF blobs at build time. -->
+  <Target Name="PreBuildKernelModule" BeforeTargets="BeforeCompile">
+    <Exec Command="dotnet run --project &quot;$(SharpProsperoRoot)\tools\SharpProspero.Bindings.Generator\SharpProspero.Bindings.Generator.csproj&quot; -c $(Configuration) -- kmod --out &quot;$(IntermediateOutputPath)KernelModuleBlobs.g.cs&quot; --namespace InstallerApp"
+          WorkingDirectory="$(MSBuildProjectDirectory)" />
+    <ItemGroup>
+      <Compile Include="$(IntermediateOutputPath)KernelModuleBlobs.g.cs" Condition="Exists('$(IntermediateOutputPath)KernelModuleBlobs.g.cs')" />
+    </ItemGroup>
+  </Target>
+
+  <Import Project="$(SharpProsperoRoot)\build\Prospero.Payload.targets" />
+
+</Project>

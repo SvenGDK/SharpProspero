@@ -46,23 +46,30 @@ public static class Inflate
     private static readonly byte[] CodeLengthOrder =
         [16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15];
 
-    /// <summary>Decompresses a bare DEFLATE stream. <paramref name="sizeHint"/> presizes the output buffer.</summary>
-    public static byte[] Raw(ReadOnlySpan<byte> data, int sizeHint = 0) => RunToArray(data, sizeHint);
+    /// <summary>
+    /// Decompresses a bare DEFLATE stream. <paramref name="sizeHint"/> presizes the output buffer;
+    /// <paramref name="maxOutput"/>, when positive, is the most bytes the result may reach before the
+    /// decode is refused, which bounds a decompression bomb.
+    /// </summary>
+    public static byte[] Raw(ReadOnlySpan<byte> data, int sizeHint = 0, int maxOutput = 0) => RunToArray(data, sizeHint, maxOutput);
 
     // Runs the block loop over a DEFLATE payload. Empty input is empty output (some encoders emit no bytes
     // for empty content); a non-empty but truncated stream still errors inside the loop.
-    private static byte[] RunToArray(ReadOnlySpan<byte> deflate, int sizeHint)
+    private static byte[] RunToArray(ReadOnlySpan<byte> deflate, int sizeHint, int maxOutput = 0)
     {
         if (deflate.IsEmpty)
             return [];
-        var output = new GrowBuffer(sizeHint > 0 ? sizeHint : Math.Max(64, deflate.Length * 4));
+        var output = new GrowBuffer(sizeHint > 0 ? sizeHint : Math.Max(64, deflate.Length * 4), maxOutput);
         var reader = new BitReader(deflate);
         Run(ref reader, output);
         return output.ToArray();
     }
 
-    /// <summary>Decompresses a zlib-wrapped (RFC 1950) stream and verifies its Adler-32 checksum.</summary>
-    public static byte[] Zlib(ReadOnlySpan<byte> data)
+    /// <summary>
+    /// Decompresses a zlib-wrapped (RFC 1950) stream and verifies its Adler-32 checksum.
+    /// <paramref name="maxOutput"/>, when positive, caps the decompressed size to bound a bomb.
+    /// </summary>
+    public static byte[] Zlib(ReadOnlySpan<byte> data, int maxOutput = 0)
     {
         if (data.Length < 6)
             throw new CompressionException("The zlib stream is too short.");
@@ -76,7 +83,7 @@ public static class Inflate
             throw new CompressionException("The zlib stream uses a preset dictionary, which is not supported.");
 
         // The DEFLATE payload sits between the 2-byte header and the 4-byte Adler-32 trailer.
-        byte[] result = RunToArray(data[start..(data.Length - 4)], data.Length * 4);
+        byte[] result = RunToArray(data[start..(data.Length - 4)], data.Length * 4, maxOutput);
         int trailer = data.Length - 4;
         uint stored = ((uint)data[trailer] << 24) | ((uint)data[trailer + 1] << 16) | ((uint)data[trailer + 2] << 8) | data[trailer + 3];
         if (Adler32(result) != stored)
@@ -93,9 +100,9 @@ public static class Inflate
     /// would return a prefix, and where the members happen to be identical it would return that prefix
     /// with both trailer checks passing, so every member is read.
     /// </remarks>
-    public static byte[] Gzip(ReadOnlySpan<byte> data)
+    public static byte[] Gzip(ReadOnlySpan<byte> data, int maxOutput = 0)
     {
-        byte[] first = ReadGzipMember(data, 0, out int pos);
+        byte[] first = ReadGzipMember(data, 0, out int pos, maxOutput);
         if (pos == data.Length)
             return first;
 
@@ -103,7 +110,10 @@ public static class Inflate
         int total = first.Length;
         while (pos < data.Length)
         {
-            byte[] member = ReadGzipMember(data, pos, out pos);
+            // The cap is on the whole file's content, so each member gets what is left of the budget;
+            // a run of members cannot together decode past the ceiling.
+            int remaining = maxOutput > 0 ? Math.Max(0, maxOutput - total) : 0;
+            byte[] member = ReadGzipMember(data, pos, out pos, remaining);
             members.Add(member);
             total += member.Length;
         }
@@ -121,7 +131,7 @@ public static class Inflate
     // Decodes the member starting at `start`, checks its own trailer against its own output, and
     // reports the offset just past it. The member's compressed data has no declared length, so where it
     // ends is only known once the block loop has stopped: the trailer begins at the next byte boundary.
-    private static byte[] ReadGzipMember(ReadOnlySpan<byte> data, int start, out int next)
+    private static byte[] ReadGzipMember(ReadOnlySpan<byte> data, int start, out int next, int maxOutput = 0)
     {
         ReadOnlySpan<byte> member = data[start..];
         if (member.Length < 18 || member[0] != 0x1F || member[1] != 0x8B)
@@ -147,7 +157,7 @@ public static class Inflate
         if (pos > member.Length - 8)
             throw new CompressionException("The gzip header is truncated.");
 
-        var output = new GrowBuffer(Math.Max(64, (member.Length - pos) * 4));
+        var output = new GrowBuffer(Math.Max(64, (member.Length - pos) * 4), maxOutput);
         var reader = new BitReader(member[pos..]);
         Run(ref reader, output);
         byte[] result = output.ToArray();
@@ -399,15 +409,25 @@ public static class Inflate
     }
 
     // A growable output buffer with a back-copy for DEFLATE back references (which may overlap).
-    private sealed class GrowBuffer(int capacity)
+    private sealed class GrowBuffer(int capacity, int max = 0)
     {
-        private byte[] _buffer = new byte[Math.Max(16, capacity)];
+        // When positive, the most bytes the output may hold; a further byte is refused, which stops a
+        // stream that expands far past its compressed size from exhausting memory.
+        private readonly int _max = max;
+        private byte[] _buffer = new byte[Math.Min(Math.Max(16, capacity), max > 0 ? max : int.MaxValue)];
         public int Count { get; private set; }
 
         public void Add(byte value)
         {
+            if (_max > 0 && Count >= _max)
+                throw new CompressionException("The decompressed data exceeds the maximum allowed size.");
             if (Count == _buffer.Length)
-                Array.Resize(ref _buffer, _buffer.Length * 2);
+            {
+                int target = _buffer.Length * 2;
+                if (_max > 0 && (target > _max || target < _buffer.Length))
+                    target = _max;
+                Array.Resize(ref _buffer, target);
+            }
             _buffer[Count++] = value;
         }
 

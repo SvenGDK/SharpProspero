@@ -4,52 +4,38 @@
 namespace SharpProspero.Payload.Kernel;
 
 /// <summary>
-/// Kernel sysent table manipulation. Reads, copies, and patches system call entries
-/// and the sysentvec structure.
+/// Kernel sysent table manipulation. Reads and patches individual system call entries
+/// by their (sy_narg, pad, sy_call, ...) layout in the sysents table.
 /// </summary>
+/// <remarks>
+/// A FreeBSD-derived <c>struct sysent</c> is 48 bytes on amd64:
+/// <c>int sy_narg</c> at +0x00, pad at +0x04, <c>sy_call_t *sy_call</c> at +0x08,
+/// and remaining audit / thread-count / entry / return / flags fields filling the
+/// rest of the 48 bytes. Callers manipulating <c>sy_call</c> must add
+/// <see cref="SyCallOffset"/> to the entry base.
+/// </remarks>
 public static unsafe class KernelSysent
 {
-    /// <summary>Size of one sysent entry (16 bytes: function pointer + argc).</summary>
-    public const int SysentSize = 16;
+    /// <summary>Size of one <c>struct sysent</c> entry on amd64 in bytes.</summary>
+    public const int SysentSize = 48;
+
+    /// <summary>Byte offset of the <c>sy_call</c> function pointer inside a sysent entry.</summary>
+    public const int SyCallOffset = 8;
 
     /// <summary>
-    /// Reads the function pointer from a sysent entry for the given syscall number.
+    /// Reads the <c>sy_call</c> function pointer for the given syscall number.
     /// </summary>
     public static ulong ReadSysentFunction(PayloadKernelIo io, ulong sysentsBase, int syscallNr)
     {
-        return io.ReadU64(sysentsBase + (ulong)(syscallNr * SysentSize));
+        return io.ReadU64(sysentsBase + (ulong)(syscallNr * SysentSize) + SyCallOffset);
     }
 
     /// <summary>
-    /// Writes a new function pointer to a sysent entry.
+    /// Writes a new <c>sy_call</c> function pointer for the given syscall number.
     /// </summary>
     public static void WriteSysentFunction(PayloadKernelIo io, ulong sysentsBase,
         int syscallNr, ulong funcAddr)
     {
-        io.WriteU64(sysentsBase + (ulong)(syscallNr * SysentSize), funcAddr);
+        io.WriteU64(sysentsBase + (ulong)(syscallNr * SysentSize) + SyCallOffset, funcAddr);
     }
-
-    /// <summary>
-    /// Reads the sv_flags field from a sysentvec structure.
-    /// </summary>
-    public static uint ReadSvFlags(PayloadKernelIo io, ulong sysentvecAddr)
-    {
-        return io.ReadU32(sysentvecAddr + 14);
-    }
-
-    /// <summary>
-    /// Writes the sv_flags field of a sysentvec structure. Used to temporarily disable
-    /// kernel patches by setting sv_flags to <c>0xFFFF</c> (max syscall = disabled) or
-    /// restore them to <c>0xDEB7</c>.
-    /// </summary>
-    public static void WriteSvFlags(PayloadKernelIo io, ulong sysentvecAddr, uint flags)
-    {
-        io.WriteU32(sysentvecAddr + 14, flags);
-    }
-
-    /// <summary>Disable value for sv_flags (max syscall number = disabled).</summary>
-    public const uint SvFlagsDisabled = 0xFFFF;
-
-    /// <summary>Enabled value for sv_flags.</summary>
-    public const uint SvFlagsEnabled = 0xDEB7;
 }

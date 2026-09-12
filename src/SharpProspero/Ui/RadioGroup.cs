@@ -93,7 +93,7 @@ public sealed class RadioGroup : UiElement
             surface.DrawCircle(dotX, dotY, radius, theme.Text);
             if (i == _selectedIndex)
                 surface.FillCircle(dotX, dotY, radius - 3, theme.Accent);
-            surface.DrawText(_options[i], textX, rowY + ((rowHeight - theme.LineHeight) / 2), theme.TextScale, theme.Text);
+            theme.DrawClipped(surface, _options[i], textX, rowY + ((rowHeight - theme.LineHeight) / 2), theme.Text, Bounds.Right - theme.Padding - textX);
         }
     }
 }

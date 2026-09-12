@@ -20,9 +20,13 @@ public readonly unsafe partial struct Surface
     {
         int x0 = Math.Clamp(x, 0, Width);
         int y0 = Math.Clamp(y, 0, Height);
-        int x1 = Math.Clamp(x + width, x0, Width);
-        int y1 = Math.Clamp(y + height, y0, Height);
-        return new Surface(_pixels + (long)y0 * Stride + x0, x1 - x0, y1 - y0, Stride);
+        // Combine origin and extent in 64-bit so an extreme width or height cannot wrap the sum negative
+        // and collapse the view to nothing instead of clamping it to the surface edge.
+        int x1 = (int)Math.Clamp((long)x + width, x0, Width);
+        int y1 = (int)Math.Clamp((long)y + height, y0, Height);
+        // The view keeps the parent's alpha behaviour so a blend into a sub-region of an off-screen
+        // target composites the same way as a blend into the whole target.
+        return new Surface(_pixels + (long)y0 * Stride + x0, x1 - x0, y1 - y0, Stride, _opaque);
     }
 
     /// <summary>Fills a rectangle with a top-to-bottom gradient from <paramref name="top"/> to <paramref name="bottom"/>.</summary>
@@ -65,7 +69,8 @@ public readonly unsafe partial struct Surface
             maxDist = 1f;
 
         int x0 = Math.Max(0, x), y0 = Math.Max(0, y);
-        int x1 = Math.Min(Width, x + width), y1 = Math.Min(Height, y + height);
+        // Combine in 64-bit so an extreme width or height cannot wrap the clip rectangle negative.
+        int x1 = (int)Math.Min((long)Width, (long)x + width), y1 = (int)Math.Min((long)Height, (long)y + height);
         for (int py = y0; py < y1; py++)
         {
             uint* dstRow = _pixels + (long)py * Stride;
@@ -182,7 +187,9 @@ public readonly unsafe partial struct Surface
             int bx = secondHalf ? x1 + (int)((x2 - x1) * b) : x0 + (int)((x1 - x0) * b);
             if (ax > bx)
                 (ax, bx) = (bx, ax);
-            HLine(ax, y, bx - ax + 1, color);
+            // Fill the half-open span [ax, bx): the right endpoint is exclusive so two triangles that
+            // meet along an edge each own their own columns and the shared boundary is drawn once.
+            HLine(ax, y, bx - ax, color);
         }
     }
 
@@ -221,8 +228,10 @@ public readonly unsafe partial struct Surface
                 }
             }
             crossings[..n].Sort();
+            // Fill each half-open span [left, right): the right crossing is exclusive so abutting spans
+            // and shared edges are covered exactly once instead of overlapping by a column.
             for (int i = 0; i + 1 < n; i += 2)
-                HLine(crossings[i], y, crossings[i + 1] - crossings[i] + 1, color);
+                HLine(crossings[i], y, crossings[i + 1] - crossings[i], color);
         }
     }
 
@@ -239,16 +248,19 @@ public readonly unsafe partial struct Surface
         if (destWidth <= 0 || destHeight <= 0 || source.Width <= 0 || source.Height <= 0)
             return;
         int x0 = Math.Max(0, destX), y0 = Math.Max(0, destY);
-        int x1 = Math.Min(Width, destX + destWidth), y1 = Math.Min(Height, destY + destHeight);
+        // Combine origin and extent in 64-bit so a far-off-screen destination cannot wrap the clip
+        // rectangle, and back-map each pixel in 64-bit so the multiply cannot overflow into a bad sample.
+        int x1 = (int)Math.Min((long)Width, (long)destX + destWidth);
+        int y1 = (int)Math.Min((long)Height, (long)destY + destHeight);
         for (int py = y0; py < y1; py++)
         {
-            int sy = (py - destY) * source.Height / destHeight;
+            long sy = ((long)py - destY) * source.Height / destHeight;
             if (sy >= source.Height) sy = source.Height - 1;
-            uint* srcRow = source._pixels + (long)sy * source.Stride;
+            uint* srcRow = source._pixels + sy * source.Stride;
             uint* dstRow = _pixels + (long)py * Stride;
             for (int px = x0; px < x1; px++)
             {
-                int sx = (px - destX) * source.Width / destWidth;
+                long sx = ((long)px - destX) * source.Width / destWidth;
                 if (sx >= source.Width) sx = source.Width - 1;
                 dstRow[px] = blended ? Blend(srcRow[sx], dstRow[px]) : srcRow[sx];
             }
@@ -265,14 +277,17 @@ public readonly unsafe partial struct Surface
         if (destWidth <= 0 || destHeight <= 0 || source.Width <= 0 || source.Height <= 0)
             return;
         int x0 = Math.Max(0, destX), y0 = Math.Max(0, destY);
-        int x1 = Math.Min(Width, destX + destWidth), y1 = Math.Min(Height, destY + destHeight);
+        // Combine in 64-bit so a far-off-screen destination cannot wrap the clip rectangle negative.
+        int x1 = (int)Math.Min((long)Width, (long)destX + destWidth);
+        int y1 = (int)Math.Min((long)Height, (long)destY + destHeight);
         float scaleX = (float)source.Width / destWidth;
         float scaleY = (float)source.Height / destHeight;
 
         for (int py = y0; py < y1; py++)
         {
-            // Map the destination pixel's centre back into the source, then take the four samples around it.
-            float syf = ((py - destY + 0.5f) * scaleY) - 0.5f;
+            // Map the destination pixel's centre back into the source, then take the four samples around
+            // it. The back-map subtracts in 64-bit so an extreme origin cannot overflow the offset.
+            float syf = ((((long)py - destY) + 0.5f) * scaleY) - 0.5f;
             int sy0 = (int)MathF.Floor(syf);
             float fy = syf - sy0;
             uint* srcRow0 = source._pixels + (long)Math.Clamp(sy0, 0, source.Height - 1) * source.Stride;
@@ -281,7 +296,7 @@ public readonly unsafe partial struct Surface
 
             for (int px = x0; px < x1; px++)
             {
-                float sxf = ((px - destX + 0.5f) * scaleX) - 0.5f;
+                float sxf = ((((long)px - destX) + 0.5f) * scaleX) - 0.5f;
                 int sx0 = (int)MathF.Floor(sxf);
                 float fx = sxf - sx0;
                 int a = Math.Clamp(sx0, 0, source.Width - 1);
@@ -291,18 +306,38 @@ public readonly unsafe partial struct Surface
         }
     }
 
-    // Interpolates each channel across the four neighbouring source pixels.
+    // Interpolates the four neighbouring source pixels. Colour is weighted by each texel's alpha
+    // (interpolated in premultiplied form and divided back out), so a fully transparent texel adds no
+    // colour and the soft edge of a sprite with transparency fades cleanly instead of darkening toward
+    // black. Alpha is interpolated on its own, and the result is returned in the straight-alpha
+    // 0xAARRGGBB layout the surface stores.
     private static uint BilinearMix(uint c00, uint c10, uint c01, uint c11, float fx, float fy)
     {
+        float w00 = (1f - fx) * (1f - fy);
+        float w10 = fx * (1f - fy);
+        float w01 = (1f - fx) * fy;
+        float w11 = fx * fy;
+
+        float a00 = (c00 >> 24) & 0xFF, a10 = (c10 >> 24) & 0xFF;
+        float a01 = (c01 >> 24) & 0xFF, a11 = (c11 >> 24) & 0xFF;
+        float alpha = (a00 * w00) + (a10 * w10) + (a01 * w01) + (a11 * w11);
+        uint outA = (uint)(alpha + 0.5f);
+        if (outA == 0)
+            return 0;
+
         uint Channel(int shift)
         {
-            float a = (c00 >> shift) & 0xFF, b = (c10 >> shift) & 0xFF;
-            float c = (c01 >> shift) & 0xFF, d = (c11 >> shift) & 0xFF;
-            float top = a + (b - a) * fx;
-            float bottom = c + (d - c) * fx;
-            return (uint)(top + (bottom - top) * fy + 0.5f) & 0xFF;
+            // Weight each colour by its own texel's alpha before interpolating, then divide the
+            // interpolated alpha back out to recover the straight (un-premultiplied) colour.
+            float sum = (((c00 >> shift) & 0xFF) * a00 * w00)
+                      + (((c10 >> shift) & 0xFF) * a10 * w10)
+                      + (((c01 >> shift) & 0xFF) * a01 * w01)
+                      + (((c11 >> shift) & 0xFF) * a11 * w11);
+            uint v = (uint)((sum / alpha) + 0.5f);
+            return v > 0xFF ? 0xFFu : v;
         }
-        return (Channel(24) << 24) | (Channel(16) << 16) | (Channel(8) << 8) | Channel(0);
+
+        return (outA << 24) | (Channel(16) << 16) | (Channel(8) << 8) | Channel(0);
     }
 
     /// <summary>
@@ -320,17 +355,20 @@ public readonly unsafe partial struct Surface
         // The rotated source fits in a box whose half-extent is the projected corner distance.
         float boundX = MathF.Abs(halfW * cos) + MathF.Abs(halfH * sin);
         float boundY = MathF.Abs(halfW * sin) + MathF.Abs(halfH * cos);
-        int x0 = Math.Max(0, centerX - (int)(boundX + 1));
-        int y0 = Math.Max(0, centerY - (int)(boundY + 1));
-        int x1 = Math.Min(Width, centerX + (int)(boundX + 1) + 1);
-        int y1 = Math.Min(Height, centerY + (int)(boundY + 1) + 1);
+        int extX = (int)(boundX + 1);
+        int extY = (int)(boundY + 1);
+        // Combine centre and extent in 64-bit so an extreme centre cannot wrap the clip rectangle.
+        int x0 = (int)Math.Clamp((long)centerX - extX, 0, Width);
+        int y0 = (int)Math.Clamp((long)centerY - extY, 0, Height);
+        int x1 = (int)Math.Clamp((long)centerX + extX + 1, 0, Width);
+        int y1 = (int)Math.Clamp((long)centerY + extY + 1, 0, Height);
 
         for (int py = y0; py < y1; py++)
         {
             uint* dstRow = _pixels + (long)py * Stride;
             for (int px = x0; px < x1; px++)
             {
-                float dx = px - centerX, dy = py - centerY;
+                float dx = (long)px - centerX, dy = (long)py - centerY;
                 // Map the destination point back into the source by the inverse rotation.
                 int sx = (int)(cos * dx + sin * dy + halfW);
                 int sy = (int)(-sin * dx + cos * dy + halfH);

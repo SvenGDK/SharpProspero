@@ -16,8 +16,6 @@ namespace SharpProspero.Ui;
 /// <param name="value">The value shown on the right.</param>
 public sealed class KeyValueRow(string name, string value = "") : UiElement
 {
-    private BitmapTextFont? _builtIn;
-
     /// <summary>The name shown on the left.</summary>
     public string Name { get; set; } = name ?? "";
 
@@ -57,11 +55,6 @@ public sealed class KeyValueRow(string name, string value = "") : UiElement
         font.DrawText(surface, shown, right - valueWidth, y, ValueColor ?? theme.Text);
     }
 
-    // The built-in font is kept between frames and rebuilt only when the theme's scale changes.
-    private ITextFont Resolve(UiTheme theme)
-    {
-        if (_builtIn is null || _builtIn.Scale != theme.TextScale)
-            _builtIn = new BitmapTextFont(theme.TextScale);
-        return _builtIn;
-    }
+    // Every row draws with the theme's font.
+    private static ITextFont Resolve(UiTheme theme) => theme.Font;
 }

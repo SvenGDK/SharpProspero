@@ -20,6 +20,8 @@ struct V2P
 struct Constants
 {
 	row_major float4x4 mvp;
+	// The matrix used to orient normals. The host supplies the inverse-transpose of the model matrix
+	// here so a non-uniform scale does not skew the normals; for a rigid model it is the rotation.
 	row_major float4x4 model;
 };
 

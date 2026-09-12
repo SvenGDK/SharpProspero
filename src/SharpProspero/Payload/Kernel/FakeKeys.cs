@@ -2,6 +2,7 @@
 // Copyright (C) 2026 SvenGDK
 
 using System;
+using System.Numerics;
 
 namespace SharpProspero.Payload.Kernel;
 
@@ -22,6 +23,17 @@ public static unsafe class PayloadFakeKeys
 
     /// <summary>Maximum number of key slots.</summary>
     private const int MaxSlots = KstuffSharedAreaConstants.FakeKeySlots;
+
+    /// <summary>User-mode registration lock. The pipe-based kernel I/O offers no
+    /// atomic compare-and-swap primitive, so a write-then-verify pattern cannot
+    /// distinguish two concurrent callers claiming the same free slot from a
+    /// single caller writing twice — both readbacks succeed identically. This
+    /// lock serialises every user-mode <see cref="RegisterFakeKey"/> and
+    /// <see cref="UnregisterFakeKey"/> so a single caller owns the bitmask +
+    /// ready_mask + key-data write for the duration of the transaction. Kernel-
+    /// side handlers only read these fields, so the lock is sufficient.
+    /// </summary>
+    private static readonly object s_registrationLock = new();
 
     /// <summary>
     /// Reads the shared area header from the given kernel address.
@@ -55,48 +67,70 @@ public static unsafe class PayloadFakeKeys
     /// writing the key data, and setting the ready bit. Returns the slot index
     /// or -1 if no free slot is available.
     /// </summary>
+    /// <remarks>
+    /// All writes happen under <see cref="s_registrationLock"/> so two
+    /// concurrent callers cannot claim the same free slot: without the lock a
+    /// write-then-verify pattern would let both writers compute the same
+    /// desired bitmask, both see their own bit land, both write different key
+    /// bytes to the same slot, and one caller's key would silently overwrite
+    /// the other's. The pipe primitive offers no atomic compare-and-swap, so
+    /// serialisation is the only correct answer.
+    /// </remarks>
     public static int RegisterFakeKey(PayloadKernelIo io, ulong sharedAreaAddr,
         ReadOnlySpan<byte> keyData)
     {
         if (keyData.Length < KeySize) return -1;
 
-        // Read current bitmask to find a free slot
-        ulong bitmask = io.ReadU64(sharedAreaAddr);
-        int slot = FindFreeSlot(bitmask);
-        if (slot < 0) return -1;
+        lock (s_registrationLock)
+        {
+            ulong bitmask = io.ReadU64(sharedAreaAddr);
+            int slot = FindFreeSlot(bitmask);
+            if (slot < 0) return -1;
 
-        ulong bit = 1UL << slot;
+            ulong bit = 1UL << slot;
 
-        // Claim the slot in bitmask
-        io.WriteU64(sharedAreaAddr, bitmask | bit);
+            // Claim the slot in the bitmask before we touch the key data so a
+            // concurrent unregister on a different slot cannot fight our write.
+            io.WriteU64(sharedAreaAddr, bitmask | bit);
 
-        // Write key data
-        ulong keyAddr = sharedAreaAddr + KeyDataOffset + (ulong)(slot * KeySize);
-        fixed (byte* p = keyData)
-            io.Write(keyAddr, p, KeySize);
+            // Write key data before publishing the ready bit so any consumer
+            // that sees the ready bit set is guaranteed to observe fully-
+            // written key material through the pipe-copyin ordering.
+            ulong keyAddr = sharedAreaAddr + KeyDataOffset + (ulong)(slot * KeySize);
+            fixed (byte* p = keyData)
+                io.Write(keyAddr, p, KeySize);
 
-        // Set the ready bit
-        ulong readyMask = io.ReadU64(sharedAreaAddr + 8);
-        io.WriteU64(sharedAreaAddr + 8, readyMask | bit);
-
-        return slot;
+            // Publish readiness last.
+            ulong readyMask = io.ReadU64(sharedAreaAddr + 8);
+            io.WriteU64(sharedAreaAddr + 8, readyMask | bit);
+            return slot;
+        }
     }
 
     /// <summary>
     /// Unregisters a fake key by clearing its ready and bitmask bits.
     /// </summary>
+    /// <remarks>
+    /// Serialised under <see cref="s_registrationLock"/> to match the
+    /// invariant established by <see cref="RegisterFakeKey"/>.
+    /// </remarks>
     public static void UnregisterFakeKey(PayloadKernelIo io, ulong sharedAreaAddr, int index)
     {
         if (index < 0 || index >= MaxSlots) return;
         ulong bit = 1UL << index;
 
-        // Clear ready_mask first
-        ulong readyMask = io.ReadU64(sharedAreaAddr + 8);
-        io.WriteU64(sharedAreaAddr + 8, readyMask & ~bit);
+        lock (s_registrationLock)
+        {
+            // Clear ready_mask first so consumers stop selecting this slot
+            // before the underlying storage becomes reusable.
+            ulong readyMask = io.ReadU64(sharedAreaAddr + 8);
+            if ((readyMask & bit) != 0)
+                io.WriteU64(sharedAreaAddr + 8, readyMask & ~bit);
 
-        // Clear bitmask
-        ulong bitmask = io.ReadU64(sharedAreaAddr);
-        io.WriteU64(sharedAreaAddr, bitmask & ~bit);
+            ulong bitmask = io.ReadU64(sharedAreaAddr);
+            if ((bitmask & bit) != 0)
+                io.WriteU64(sharedAreaAddr, bitmask & ~bit);
+        }
     }
 
     /// <summary>
@@ -134,18 +168,7 @@ public static unsafe class PayloadFakeKeys
         return TrailingZeroCount(available);
     }
 
-    private static int BitCount(ulong v)
-    {
-        int c = 0;
-        while (v != 0) { v &= v - 1; c++; }
-        return c;
-    }
+    private static int BitCount(ulong v) => BitOperations.PopCount(v);
 
-    private static int TrailingZeroCount(ulong v)
-    {
-        if (v == 0) return 64;
-        int c = 0;
-        while ((v & 1) == 0) { v >>= 1; c++; }
-        return c;
-    }
+    private static int TrailingZeroCount(ulong v) => v == 0 ? 64 : BitOperations.TrailingZeroCount(v);
 }

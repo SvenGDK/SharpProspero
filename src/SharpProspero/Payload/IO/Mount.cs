@@ -276,30 +276,21 @@ public static unsafe partial class PayloadMount
     }
 
     /// <summary>
-    /// Returns whether the path at <paramref name="path"/> is a mount point by comparing
-    /// the filesystem identifier of the path and its parent.
+    /// Returns whether the path at <paramref name="path"/> is a nullfs mount point.
+    /// Checks <c>statfs.f_fstypename</c> for "nullfs".
     /// </summary>
     public static bool IsMounted(byte* path)
     {
-        FreeBsdStatfs pathStat = default;
-        FreeBsdStatfs parentStat = default;
-        if (statfs(path, &pathStat) != 0)
+        FreeBsdStatfs sfs = default;
+        if (statfs(path, &sfs) != 0)
             return false;
-        // Build parent path: path + "/.."
-        int len = StringLength(path);
-        byte* parent = stackalloc byte[len + 4];
-        for (int i = 0; i < len; i++) parent[i] = path[i];
-        parent[len] = (byte)'/';
-        parent[len + 1] = (byte)'.';
-        parent[len + 2] = (byte)'.';
-        parent[len + 3] = 0;
-        if (statfs(parent, &parentStat) != 0)
-            return true;
-        // Different fsid means it is a mount point.
-        for (int i = 0; i < 8; i++)
-            if (pathStat.f_fsid[i] != parentStat.f_fsid[i])
-                return true;
-        return false;
+        return sfs.f_fstypename[0] == (byte)'n'
+            && sfs.f_fstypename[1] == (byte)'u'
+            && sfs.f_fstypename[2] == (byte)'l'
+            && sfs.f_fstypename[3] == (byte)'l'
+            && sfs.f_fstypename[4] == (byte)'f'
+            && sfs.f_fstypename[5] == (byte)'s'
+            && sfs.f_fstypename[6] == 0;
     }
 
     private static int StringLength(byte* s)

@@ -44,7 +44,12 @@ public readonly struct AgcBufferDescriptor
         if (strideInBytes >= 1u << 14) throw new ArgumentOutOfRangeException(nameof(strideInBytes), "The stride must be less than 16384 bytes.");
         uint word0 = (uint)(address & 0xFFFFFFFF);
         uint word1 = (uint)((address >> 32) & 0xFFFF) | ((strideInBytes & 0x3FFF) << 16);
-        uint word3 = RegularSwizzle | (RegularFormat << 12); // out-of-bounds mode 0, buffer type 0
+        // The out-of-bounds behaviour sits in word3 bits 28-29. With a real stride a read is out of
+        // bounds when the index reaches the record count or the offset reaches the stride
+        // (kIndexAndOffset, 0). With a zero stride the record count instead holds the byte size and the
+        // one element repeats, so the bound is an offset check (kOffsetOrSwizzle, 3).
+        uint outOfBounds = strideInBytes == 0 ? 3u : 0u;
+        uint word3 = RegularSwizzle | (RegularFormat << 12) | (outOfBounds << 28); // buffer type 0
         return new AgcBufferDescriptor(word0, word1, elementCount, word3);
     }
 

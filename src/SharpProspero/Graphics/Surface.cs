@@ -17,9 +17,19 @@ namespace SharpProspero.Graphics;
 /// <param name="width">Width in pixels.</param>
 /// <param name="height">Height in pixels.</param>
 /// <param name="stride">Pixels from the start of one row to the next; at least <paramref name="width"/>.</param>
-public readonly unsafe partial struct Surface(uint* pixels, int width, int height, int stride)
+/// <param name="opaque">
+/// Whether the pixels are an opaque display back buffer (true, the default) or an off-screen target
+/// that keeps its own alpha channel (false). It only affects how a blend combines the alpha of what is
+/// drawn with what is already there.
+/// </param>
+public readonly unsafe partial struct Surface(uint* pixels, int width, int height, int stride, bool opaque = true)
 {
     private readonly uint* _pixels = pixels;
+
+    // True for a display back buffer, whose alpha is always left fully opaque; false for an off-screen
+    // target (a PixelBuffer) that carries a real alpha channel, so a blend must compute the resulting
+    // alpha rather than force it opaque.
+    private readonly bool _opaque = opaque;
 
     /// <summary>Creates a surface over <paramref name="pixels"/> whose rows are packed (stride equals width).</summary>
     /// <param name="pixels">Pointer to <paramref name="width"/> * <paramref name="height"/> packed pixels.</param>
@@ -213,22 +223,45 @@ public readonly unsafe partial struct Surface(uint* pixels, int width, int heigh
         }
     }
 
-    // Source-over compositing onto an opaque destination: result = src*a + dst*(1-a) per channel,
-    // with the destination alpha left opaque since it is a display framebuffer.
-    private static uint Blend(uint src, uint dst)
+    // Source-over compositing of one pixel. On an opaque back buffer the destination alpha stays 0xFF;
+    // on an off-screen target that carries alpha the result alpha is a + dst_a*(1-a) and the colour is
+    // un-premultiplied against it, so compositing into a transparent buffer and blitting that buffer
+    // later gives the same picture as drawing straight onto the screen.
+    private uint Blend(uint src, uint dst)
     {
         uint a = src >> 24;
         if (a == 0)
             return dst;
-        if (a == 255)
+
+        if (_opaque)
+        {
+            if (a == 255)
+                return src;
+            uint na0 = 255 - a;
+            uint sr0 = (src >> 16) & 0xFF, sg0 = (src >> 8) & 0xFF, sb0 = src & 0xFF;
+            uint dr0 = (dst >> 16) & 0xFF, dg0 = (dst >> 8) & 0xFF, db0 = dst & 0xFF;
+            uint rr0 = (sr0 * a + dr0 * na0 + 127) / 255;
+            uint rg0 = (sg0 * a + dg0 * na0 + 127) / 255;
+            uint rb0 = (sb0 * a + db0 * na0 + 127) / 255;
+            return 0xFF000000u | (rr0 << 16) | (rg0 << 8) | rb0;
+        }
+
+        uint da = dst >> 24;
+        // Nothing under the pixel, or a fully opaque source: the source colour and alpha carry straight.
+        if (da == 0 || a == 255)
             return src;
+
         uint na = 255 - a;
+        uint dw = (da * na + 127) / 255;   // the destination's contribution weight, da*(1-a)
+        uint outA = a + dw;                // the resulting coverage
+        if (outA == 0)
+            return 0;
         uint sr = (src >> 16) & 0xFF, sg = (src >> 8) & 0xFF, sb = src & 0xFF;
         uint dr = (dst >> 16) & 0xFF, dg = (dst >> 8) & 0xFF, db = dst & 0xFF;
-        uint rr = (sr * a + dr * na + 127) / 255;
-        uint rg = (sg * a + dg * na + 127) / 255;
-        uint rb = (sb * a + db * na + 127) / 255;
-        return 0xFF000000u | (rr << 16) | (rg << 8) | rb;
+        uint rr = (sr * a + dr * dw + outA / 2) / outA;
+        uint rg = (sg * a + dg * dw + outA / 2) / outA;
+        uint rb = (sb * a + db * dw + outA / 2) / outA;
+        return (outA << 24) | (rr << 16) | (rg << 8) | rb;
     }
 
     /// <summary>Draws one glyph at (<paramref name="x"/>, <paramref name="y"/>) scaled by <paramref name="scale"/>.</summary>
@@ -263,6 +296,54 @@ public readonly unsafe partial struct Surface(uint* pixels, int width, int heigh
         {
             DrawGlyph(c, x, y, scale, color);
             x += step;
+        }
+    }
+
+    /// <summary>
+    /// Draws <paramref name="text"/> at (<paramref name="x"/>, <paramref name="y"/>) but within
+    /// <paramref name="maxWidth"/> pixels, ending it with a trailing "..." when the whole string will not
+    /// fit. Nothing is drawn past <paramref name="x"/> + <paramref name="maxWidth"/>. A control uses this
+    /// so a long string cannot spill across its edge into a neighbour.
+    /// </summary>
+    public void DrawTextClipped(ReadOnlySpan<char> text, int x, int y, int scale, Color color, int maxWidth)
+    {
+        if (maxWidth <= 0)
+            return;
+        int step = BitmapFont.GlyphSize * scale;
+        if (text.Length * step <= maxWidth)
+        {
+            DrawText(text, x, y, scale, color);
+            return;
+        }
+
+        int maxGlyphs = maxWidth / step;
+        if (maxGlyphs <= 0)
+            return;
+
+        // Too narrow even for the text plus a marker: draw only the glyphs that fit.
+        const int ellipsisGlyphs = 3;
+        if (maxGlyphs <= ellipsisGlyphs)
+        {
+            int cx0 = x;
+            for (int i = 0; i < maxGlyphs; i++)
+            {
+                DrawGlyph(text[i], cx0, y, scale, color);
+                cx0 += step;
+            }
+            return;
+        }
+
+        int keep = maxGlyphs - ellipsisGlyphs;
+        int cx = x;
+        for (int i = 0; i < keep; i++)
+        {
+            DrawGlyph(text[i], cx, y, scale, color);
+            cx += step;
+        }
+        for (int i = 0; i < ellipsisGlyphs; i++)
+        {
+            DrawGlyph('.', cx, y, scale, color);
+            cx += step;
         }
     }
 

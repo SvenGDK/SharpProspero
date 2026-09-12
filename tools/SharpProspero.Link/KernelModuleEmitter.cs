@@ -399,7 +399,8 @@ public sealed class KernelModuleEmitter
         /// <summary>Shared area base for fake key storage. Layout:
         /// +0x00 = bitmask (uint64, allocation bitmap),
         /// +0x08 = ready_mask (uint64, keys with valid data),
-        /// +0x10 = key_data[63][32] (key storage array).</summary>
+        /// +0x10 = pad[16] (alignment padding),
+        /// +0x20 = key_data[63][32] (key storage array).</summary>
         public const string SharedAreaBase = "shared_area_base";
 
         // ---- Subsystem handler entry points for doreti_iret continuation dispatch ----
@@ -4245,6 +4246,38 @@ public sealed class KernelModuleEmitter
         _code.AddRange([0x85, 0xC0]);
         int jnzNr1Fail = EmitJccRel32Forward(0x0F, 0x85);
 
+        // get_pcb_dbregs_checked: get_current_pcb_flags_ptr → get_pcb_dbregs_checked_at
+        EmitLeaRdiRspDisp32(0x68);                    // lea rdi, [rsp + 0x68] (p_pcb_flags temp)
+        EmitCallPatch(PatchTargetNames.GetCurrentPcbFlagsPtrChecked);
+        _code.AddRange([0x85, 0xC0]);
+        int jnzNr1PcbFail = EmitJccRel32Forward(0x0F, 0x85);
+        EmitLoadRaxFromStackDisp32(0x68);             // rax = p_pcb_flags
+        _code.AddRange([0x48, 0x89, 0xC7]);           // mov rdi, rax
+        EmitLeaRdiRspDisp32(0x70);                    // lea rdi, ... wait need rsi for &flags
+        // get_pcb_dbregs_checked_at(p_pcb_flags, &flags, &had)
+        EmitLoadRaxFromStackDisp32(0x68);             // rdi = p_pcb_flags
+        _code.AddRange([0x48, 0x89, 0xC7]);           // mov rdi, rax
+        _code.AddRange([0x48, 0x8D, 0xB4, 0x24, 0x70, 0x00, 0x00, 0x00]); // lea rsi, [rsp+0x70] (&flags)
+        _code.AddRange([0x48, 0x8D, 0x94, 0x24, 0x78, 0x00, 0x00, 0x00]); // lea rdx, [rsp+0x78] (&had)
+        EmitCallPatch(PatchTargetNames.GetPcbDbregsCheckedAt);
+        _code.AddRange([0x85, 0xC0]);
+        int jnzNr1PcbFail2 = EmitJccRel32Forward(0x0F, 0x85);
+
+        // if (!have_dbgregs): zero DR0-DR3 (frame[6..9]), mask DR7 (frame[10] &= -16)
+        _code.AddRange([0x8B, 0x84, 0x24, 0x78, 0x00, 0x00, 0x00]); // mov eax, [rsp+0x78] (had_dbgregs)
+        _code.AddRange([0x85, 0xC0]);                 // test eax, eax
+        int jnzHasDbregs = EmitJccRel8Forward(0x75);  // skip zeroing if has dbregs
+        _code.AddRange([0x48, 0x31, 0xC0]);           // xor rax, rax
+        EmitStoreRaxToStackDisp32(0x30);              // stack_frame[6] = 0 (DR0)
+        EmitStoreRaxToStackDisp32(0x38);              // stack_frame[7] = 0 (DR1)
+        EmitStoreRaxToStackDisp32(0x40);              // stack_frame[8] = 0 (DR2)
+        EmitStoreRaxToStackDisp32(0x48);              // stack_frame[9] = 0 (DR3)
+        // stack_frame[10] &= -16 (clear low 4 bits of DR7)
+        EmitLoadRaxFromStackDisp32(0x50);
+        _code.AddRange([0x48, 0x83, 0xE0, 0xF0]);     // and rax, -16
+        EmitStoreRaxToStackDisp32(0x50);
+        PatchRel8Forward(jnzHasDbregs);
+
         // push_stack_checked(regs, stack_frame, 96)
         _code.AddRange([0x48, 0x89, 0xDF]);           // mov rdi, rbx
         _code.AddRange([0x48, 0x89, 0xE6]);           // mov rsi, rsp
@@ -4253,16 +4286,24 @@ public sealed class KernelModuleEmitter
         _code.AddRange([0x85, 0xC0]);
         int jnzNr1PushFail = EmitJccRel32Forward(0x0F, 0x85);
 
-        // Redirect: regs[RDI] = regs[RSP] + 48, regs[RSI] = args[RDI],
-        // regs[RDX] = 48, regs[RIP] = copyout
+        // copy_to_kernel(regs[RDI]+td_retval, 0, 8) — zero td_retval
+        EmitLoadFromFrameViaReg(OffRdi, 0x48, 7, regBase: 3); // mov rdi, [rbx+OffRdi] (td)
+        _code.AddRange([0x48, 0x81, 0xC7, 0x08, 0x04, 0x00, 0x00]); // add rdi, 0x408 (td_retval)
+        // &zero at [rsp+0x80] (already zeroed from stack alloc)
+        _code.AddRange([0x48, 0xC7, 0x84, 0x24, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]); // mov qword [rsp+0x80], 0
+        _code.AddRange([0x48, 0x8D, 0xB4, 0x24, 0x80, 0x00, 0x00, 0x00]); // lea rsi, [rsp+0x80]
+        _code.AddRange([0xBA, 0x08, 0x00, 0x00, 0x00]); // mov edx, 8
+        EmitCallPatch(PatchTargetNames.CopyToKernel);
+        _code.AddRange([0x85, 0xC0]);
+        int jnzNr1RetvalFail = EmitJccRel32Forward(0x0F, 0x85);
+
+        // Save user buffer BEFORE overwriting regs[RDI]
+        EmitLoadFromFrameViaReg(OffRdi, 0x48, 5, regBase: 3); // mov r13, [rbx + OffRdi] (save user buf)
         EmitLoadFromFrameViaReg(OffIretRsp, 0x48, 0, regBase: 3); // mov rax, [rbx + OffIretRsp]
         _code.AddRange([0x48, 0x83, 0xC0, 0x30]);     // add rax, 48
-        _code.AddRange([0x48, 0x89, 0x03]);           // mov [rbx + OffRdi], rax
-        EmitLoadFromFrameViaReg(OffRdi, 0x48, 0, regBase: 3); // mov rax, [rbx + OffRdi] -> args[RDI]
-        // args[RDI] is the user buffer address from the original syscall.
-        // regs[RSI] = original regs[RDI] (the user buffer)
-        EmitLoadFromFrameViaReg(OffRdi, 0x48, 0, regBase: 3);
-        EmitStoreToFrameFromReg(OffRsi, 0x48, 0, regBase: 3);    // mov [rbx + OffRsi], rax
+        EmitStoreToFrameFromReg(OffRdi, 0x48, 0, regBase: 3);    // regs[RDI] = RSP+48 (dest for copyout)
+        // regs[RSI] = saved user buffer (source for copyout)
+        _code.AddRange([0x4C, 0x89, 0x6B, (byte)OffRsi]); // mov [rbx + OffRsi], r13
         _code.AddRange([0x48, 0xC7, 0x43, (byte)OffRdx, 0x30, 0x00, 0x00, 0x00]); // mov qword [rbx+OffRdx], 48
         EmitMovAbsRaxPatch(PatchTargetNames.CopierOut);
         EmitStoreToFrameFromReg(OffRip, 0x48, 0, regBase: 3);    // mov [rbx + OffRip], rax
@@ -4271,23 +4312,124 @@ public sealed class KernelModuleEmitter
         _code.AddRange([0x31, 0xC0]);
         int jmpEpilogue1 = EmitJmpRel32Forward();
 
-        // ---- nr == 3: read MSR ----
+        // ---- nr == 2: write debug registers ----
         PatchRel32Forward(jneNr2);
+        _code.AddRange([0x41, 0x83, 0xFC, 0x02]);     // cmp r12d, 2
+        int jneNr3 = EmitJccRel32Forward(0x0F, 0x85);
+
+        // Build frame[14] (112 bytes) on local stack:
+        // [0]=doreti_iret, [1]=MKTRAP(KEKCALL,1), [2..11]=0, [12]=regs[RDI], [13]=0
+        EmitMovAbsRaxPatch(PatchTargetNames.DoretiIret);
+        EmitStoreRaxToStackDisp32(0x00);
+        _code.AddRange([0x48, 0xB8]);                 // movabs rax, MKTRAP(KEKCALL,1)
+        var mkTrap1 = ((ulong)0xDEAD0001 << 32) | 1;
+        _code.AddRange(BitConverter.GetBytes(mkTrap1));
+        EmitStoreRaxToStackDisp32(0x08);
+        // Zero frame[2..11] (10 qwords at offsets 0x10..0x60)
+        _code.AddRange([0x48, 0x31, 0xC0]);           // xor rax, rax
+        for (int i = 0; i < 10; i++)
+            EmitStoreRaxToStackDisp32(0x10 + i * 8);
+        // frame[12] = regs[RDI] (saved thread descriptor)
+        EmitLoadFromFrameViaReg(OffRdi, 0x48, 0, regBase: 3);
+        EmitStoreRaxToStackDisp32(0x60);
+        // frame[13] = 0
+        _code.AddRange([0x48, 0x31, 0xC0]);           // xor rax, rax
+        EmitStoreRaxToStackDisp32(0x68);
+
+        // push_stack_checked(regs, frame, 112)
+        _code.AddRange([0x48, 0x89, 0xDF]);           // mov rdi, rbx
+        _code.AddRange([0x48, 0x89, 0xE6]);           // mov rsi, rsp
+        _code.AddRange([0xBA, 0x70, 0x00, 0x00, 0x00]); // mov edx, 112
+        EmitCallPatch(PatchTargetNames.PushStackChecked);
+        _code.AddRange([0x85, 0xC0]);
+        int jnzNr2PushFail = EmitJccRel32Forward(0x0F, 0x85);
+
+        // Redirect: RDI=args[RDI], RSI=RSP+48, RDX=48, RIP=copyin
+        EmitLoadFromFrameViaReg(OffRdi, 0x48, 0, regBase: 3);
+        EmitStoreToFrameFromReg(OffRdi, 0x48, 0, regBase: 3);
+        EmitLoadFromFrameViaReg(OffIretRsp, 0x48, 0, regBase: 3);
+        _code.AddRange([0x48, 0x83, 0xC0, 0x30]);     // add rax, 48
+        EmitStoreToFrameFromReg(OffRsi, 0x48, 0, regBase: 3);
+        _code.AddRange([0x48, 0xC7, 0x43, (byte)OffRdx, 0x30, 0x00, 0x00, 0x00]);
+        EmitMovAbsRaxPatch(PatchTargetNames.CopierIn);
+        EmitStoreToFrameFromReg(OffRip, 0x48, 0, regBase: 3);
+
+        _code.AddRange([0x31, 0xC0]);                 // return 0
+        int jmpEpilogueNr2 = EmitJmpRel32Forward();
+
+        // ---- nr == 3: read MSR ----
+        PatchRel32Forward(jneNr3);
         _code.AddRange([0x41, 0x83, 0xFC, 0x03]);     // cmp r12d, 3
         int jneNr5 = EmitJccRel32Forward(0x0F, 0x85);
 
-        // rdmsr(args[RDI], &args[RAX])
-        EmitLoadFromFrameViaReg(OffRdi, 0x48, 7, regBase: 3);  // mov rdi, [rbx + OffRdi]
-        _code.AddRange([0x48, 0x8D, 0x73, (byte)OffRax]); // lea rsi, [rbx + OffRax]
+        EmitLoadFromFrameViaReg(OffRdi, 0x48, 7, regBase: 3);
+        _code.AddRange([0x48, 0x8D, 0x73, (byte)OffRax]);
         EmitCallPatch(PatchTargetNames.RdmsrFn);
-        // rdmsr returns 1 on success, 0 on fault. Invert: return EFAULT if 0.
         _code.AddRange([0x85, 0xC0]);
         int jzMsrFail = EmitJccRel32Forward(0x0F, 0x84);
-        _code.AddRange([0x31, 0xC0]);                 // xor eax, eax (success)
+        _code.AddRange([0x31, 0xC0]);
         int jmpEpilogue2 = EmitJmpRel32Forward();
 
-        // ---- nr == 0xFFFFFFFF: ping ----
+        // ---- nr == 5: remote syscall ----
         PatchRel32Forward(jneNr5);
+        _code.AddRange([0x41, 0x83, 0xFC, 0x05]);     // cmp r12d, 5
+        int jneNrPing = EmitJccRel32Forward(0x0F, 0x85);
+
+        // Build frame[16] (128 bytes) on local stack:
+        // [0]=doreti_iret, [1]=MKTRAP(KEKCALL,2), [2..5]=0,
+        // [6]=args[RDI](pid), [7]=args[RSI](syscall_no), [8..13]=0, [14]=regs[RDI](td), [15]=0
+        EmitMovAbsRaxPatch(PatchTargetNames.DoretiIret);
+        EmitStoreRaxToStackDisp32(0x00);
+        _code.AddRange([0x48, 0xB8]);                 // movabs rax, MKTRAP(KEKCALL,2)
+        var mkTrap2 = ((ulong)0xDEAD0001 << 32) | 2;
+        _code.AddRange(BitConverter.GetBytes(mkTrap2));
+        EmitStoreRaxToStackDisp32(0x08);
+        // Zero [2..5]
+        _code.AddRange([0x48, 0x31, 0xC0]);
+        for (int i = 2; i <= 5; i++)
+            EmitStoreRaxToStackDisp32(i * 8);
+        // [6] = args[RDI] (target PID)
+        EmitLoadFromFrameViaReg(OffRdi, 0x48, 0, regBase: 3);
+        EmitStoreRaxToStackDisp32(0x30);
+        // [7] = args[RSI] (syscall number) — but args[RSI] was overwritten with nr.
+        // The original uses args from the syscall trap frame. RSI held nr,
+        // RDX held the syscall number for nr=5. Re-read from trap frame.
+        EmitLoadFromFrameViaReg(OffRdx, 0x48, 0, regBase: 3);
+        EmitStoreRaxToStackDisp32(0x38);
+        // Zero [8..13]
+        _code.AddRange([0x48, 0x31, 0xC0]);
+        for (int i = 8; i <= 13; i++)
+            EmitStoreRaxToStackDisp32(i * 8);
+        // [14] = regs[RDI] (saved thread descriptor)
+        EmitLoadFromFrameViaReg(OffRdi, 0x48, 0, regBase: 3);
+        EmitStoreRaxToStackDisp32(0x70);
+        // [15] = 0
+        _code.AddRange([0x48, 0x31, 0xC0]);
+        EmitStoreRaxToStackDisp32(0x78);
+
+        // push_stack_checked(regs, frame, 128)
+        _code.AddRange([0x48, 0x89, 0xDF]);           // mov rdi, rbx
+        _code.AddRange([0x48, 0x89, 0xE6]);           // mov rsi, rsp
+        _code.AddRange([0xBA, 0x80, 0x00, 0x00, 0x00]); // mov edx, 128
+        EmitCallPatch(PatchTargetNames.PushStackChecked);
+        _code.AddRange([0x85, 0xC0]);
+        int jnzNr5PushFail = EmitJccRel32Forward(0x0F, 0x85);
+
+        // Redirect: RDI=args[RCX](user buf), RSI=RSP+64, RDX=48, RIP=copyin
+        EmitLoadFromFrameViaReg(OffRcx, 0x48, 0, regBase: 3);
+        EmitStoreToFrameFromReg(OffRdi, 0x48, 0, regBase: 3);
+        EmitLoadFromFrameViaReg(OffIretRsp, 0x48, 0, regBase: 3);
+        _code.AddRange([0x48, 0x83, 0xC0, 0x40]);     // add rax, 64
+        EmitStoreToFrameFromReg(OffRsi, 0x48, 0, regBase: 3);
+        _code.AddRange([0x48, 0xC7, 0x43, (byte)OffRdx, 0x30, 0x00, 0x00, 0x00]);
+        EmitMovAbsRaxPatch(PatchTargetNames.CopierIn);
+        EmitStoreToFrameFromReg(OffRip, 0x48, 0, regBase: 3);
+
+        _code.AddRange([0x31, 0xC0]);                 // return 0
+        int jmpEpilogueNr5 = EmitJmpRel32Forward();
+
+        // ---- nr == 0xFFFFFFFF: ping ----
+        PatchRel32Forward(jneNrPing);
         _code.AddRange([0x41, 0x81, 0xFC, 0xFF, 0xFF, 0xFF, 0xFF]); // cmp r12d, 0xFFFFFFFF
         int jneEnosys = EmitJccRel32Forward(0x0F, 0x85);
 
@@ -4301,15 +4443,28 @@ public sealed class KernelModuleEmitter
         _code.AddRange([0xB8, 0x4E, 0x00, 0x00, 0x00]); // mov eax, 78 (ENOSYS)
         int jmpEpilogue4 = EmitJmpRel32Forward();
 
+        // ---- nr=1 retval fail: undo push_stack_checked by restoring RSP ----
+        PatchRel32Forward(jnzNr1RetvalFail);
+        // regs[RSP] += 96 to undo the push
+        EmitLoadFromFrameViaReg(OffIretRsp, 0x48, 0, regBase: 3);
+        _code.AddRange([0x48, 0x83, 0xC0, 0x60]);     // add rax, 96
+        EmitStoreToFrameFromReg(OffIretRsp, 0x48, 0, regBase: 3);
+
         // ---- EFAULT returns ----
         PatchRel32Forward(jnzNr1Fail);
+        PatchRel32Forward(jnzNr1PcbFail);
+        PatchRel32Forward(jnzNr1PcbFail2);
         PatchRel32Forward(jnzNr1PushFail);
+        PatchRel32Forward(jnzNr2PushFail);
+        PatchRel32Forward(jnzNr5PushFail);
         PatchRel32Forward(jzMsrFail);
         _code.AddRange([0xB8, 0x0E, 0x00, 0x00, 0x00]); // mov eax, 14 (EFAULT)
 
         // Epilogue:
         PatchRel32Forward(jmpEpilogue1);
+        PatchRel32Forward(jmpEpilogueNr2);
         PatchRel32Forward(jmpEpilogue2);
+        PatchRel32Forward(jmpEpilogueNr5);
         PatchRel32Forward(jmpEpilogue3);
         PatchRel32Forward(jmpEpilogue4);
         EmitAddRspImm32(0xC0);
@@ -4356,8 +4511,9 @@ public sealed class KernelModuleEmitter
         // Prologue
         _code.Add(0x53);                              // push rbx
         _code.AddRange([0x41, 0x54]);                 // push r12
+        _code.AddRange([0x41, 0x55]);                 // push r13
         _code.Add(0x55);                              // push rbp
-        EmitSubRspImm32(0x80);
+        EmitSubRspImm32(0x110);
 
         // rbx = regs, r12d = trap sub-index
         _code.AddRange([0x48, 0x89, 0xFB]);           // mov rbx, rdi
@@ -4384,16 +4540,348 @@ public sealed class KernelModuleEmitter
         _code.AddRange([0x85, 0xC0]);                 // test eax, eax
         int jnzT1CopyFail = EmitJccRel32Forward(0x0F, 0x85);
 
-        // write_dbgregs_checked(&stack_frame[5])
-        EmitLeaRdiRspDisp32(0x28);                    // lea rdi, [rsp + 40]
+        // 1. copy_to_kernel(stack_frame[11]+td_retval, 0, 8) — zero td_retval
+        EmitLoadRaxFromStackDisp32(0x58);             // stack_frame[11] = saved td
+        _code.AddRange([0x48, 0x05, 0x08, 0x04, 0x00, 0x00]); // add rax, 0x408
+        _code.AddRange([0x48, 0x89, 0xC7]);           // mov rdi, rax
+        _code.AddRange([0x48, 0xC7, 0x84, 0x24, 0xA0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]); // [rsp+0xA0] = 0
+        _code.AddRange([0x48, 0x8D, 0xB4, 0x24, 0xA0, 0x00, 0x00, 0x00]); // lea rsi, [rsp+0xA0]
+        _code.AddRange([0xBA, 0x08, 0x00, 0x00, 0x00]); // mov edx, 8
+        EmitCallPatch(PatchTargetNames.CopyToKernel);
+        _code.AddRange([0x85, 0xC0]);
+        int jnzT1RetvalFail = EmitJccRel32Forward(0x0F, 0x85);
+
+        // 2. read_dbgregs_checked(old_dbgregs) at [rsp+0xA8] (48 bytes)
+        _code.AddRange([0x48, 0x8D, 0xBC, 0x24, 0xA8, 0x00, 0x00, 0x00]); // lea rdi, [rsp+0xA8]
+        EmitCallPatch(PatchTargetNames.ReadDbgregsChecked);
+        _code.AddRange([0x85, 0xC0]);
+        int jnzT1ReadDrFail = EmitJccRel32Forward(0x0F, 0x85);
+
+        // 3. get_current_pcb_flags_ptr_checked(&p_pcb_flags) at [rsp+0xE0]
+        _code.AddRange([0x48, 0x8D, 0xBC, 0x24, 0xE0, 0x00, 0x00, 0x00]); // lea rdi, [rsp+0xE0]
+        EmitCallPatch(PatchTargetNames.GetCurrentPcbFlagsPtrChecked);
+        _code.AddRange([0x85, 0xC0]);
+        int jnzT1PcbPtrFail = EmitJccRel32Forward(0x0F, 0x85);
+
+        // 4. get_pcb_dbregs_checked_at(p_pcb_flags, &flags, &had)
+        EmitLoadRaxFromStackDisp32(0xE0);             // rdi = p_pcb_flags
+        _code.AddRange([0x48, 0x89, 0xC7]);
+        _code.AddRange([0x48, 0x8D, 0xB4, 0x24, 0xE8, 0x00, 0x00, 0x00]); // lea rsi, [rsp+0xE8] (&flags)
+        _code.AddRange([0x48, 0x8D, 0x94, 0x24, 0xF0, 0x00, 0x00, 0x00]); // lea rdx, [rsp+0xF0] (&had)
+        EmitCallPatch(PatchTargetNames.GetPcbDbregsCheckedAt);
+        _code.AddRange([0x85, 0xC0]);
+        int jnzT1GetDrFail = EmitJccRel32Forward(0x0F, 0x85);
+
+        // 5. set_pcb_dbregs_checked_at(p_pcb_flags, flags)
+        EmitLoadRaxFromStackDisp32(0xE0);
+        _code.AddRange([0x48, 0x89, 0xC7]);           // rdi = p_pcb_flags
+        EmitLoadRaxFromStackDisp32(0xE8);
+        _code.AddRange([0x48, 0x89, 0xC6]);           // rsi = flags
+        EmitCallPatch(PatchTargetNames.SetPcbDbregsCheckedAt);
+        _code.AddRange([0x85, 0xC0]);
+        int jnzT1SetDrFail = EmitJccRel32Forward(0x0F, 0x85);
+
+        // 6. write_dbgregs_checked(&stack_frame[5])
+        EmitLeaRdiRspDisp32(0x28);
         EmitCallPatch(PatchTargetNames.WriteDbgregsChecked);
         _code.AddRange([0x85, 0xC0]);
         int jnzT1WriteFail = EmitJccRel32Forward(0x0F, 0x85);
 
         int jmpEpilogueT1 = EmitJmpRel32Forward();
 
-        // ---- trap == 3 or 4: remote syscall result ----
+        // write_dbgregs failure: rollback via restore_dbgregs_state_checked_at
+        PatchRel32Forward(jnzT1WriteFail);
+        EmitLoadRaxFromStackDisp32(0xE0);             // rdi = p_pcb_flags
+        _code.AddRange([0x48, 0x89, 0xC7]);
+        EmitLoadRaxFromStackDisp32(0xE8);             // rsi = pcb_flags_value
+        _code.AddRange([0x48, 0x89, 0xC6]);
+        _code.AddRange([0x48, 0x8D, 0x94, 0x24, 0xA8, 0x00, 0x00, 0x00]); // rdx = &old_dbgregs
+        EmitLoadRaxFromStackDisp32(0xF0);             // rcx = had_dbgregs
+        _code.AddRange([0x48, 0x89, 0xC1]);
+        EmitCallPatch(PatchTargetNames.RestoreDbgregsStateCheckedAt);
+        _code.AddRange([0x48, 0xC7, 0x43, (byte)OffRax, 0x0E, 0x00, 0x00, 0x00]); // regs[RAX] = EFAULT
+        int jmpT1RollbackEpilogue = EmitJmpRel32Forward();
+
+        // ---- trap == 2: remote syscall copyin continuation ----
         PatchRel32Forward(jneTrap3);
+        _code.AddRange([0x41, 0x83, 0xFC, 0x02]);     // cmp r12d, 2
+        int jneTrap34 = EmitJccRel32Forward(0x0F, 0x85);
+
+        // Pop 15 qwords (120 bytes) from kernel stack
+        _code.AddRange([0x48, 0x89, 0xDF]);           // mov rdi, rbx
+        _code.AddRange([0x48, 0x89, 0xE6]);           // mov rsi, rsp
+        _code.AddRange([0xBA, 0x78, 0x00, 0x00, 0x00]); // mov edx, 120
+        EmitCallPatch(PatchTargetNames.PopStackChecked);
+        _code.AddRange([0x85, 0xC0]);
+        int jnzT2PopFail = EmitJccRel32Forward(0x0F, 0x85);
+
+        // Check copyin result
+        EmitLoadFromFrameViaReg(OffRax, 0x48, 0, regBase: 3);
+        _code.AddRange([0x85, 0xC0]);                 // test eax, eax
+        int jnzT2CopyFailed = EmitJccRel32Forward(0x0F, 0x85);
+
+        // Extract: pid = local[5], sysc_no = local[6], saved_td = local[13]
+        // Local frame layout after pop: [0]=MKTRAP, [1..4]=zeros, [5]=pid,
+        // [6]=sysc_no, [7..12]=syscall args, [13]=saved_td, [14]=past-frame
+        EmitLoadRaxFromStackDisp32(0x28);             // local[5] = pid
+        _code.AddRange([0x41, 0x89, 0xC5]);           // mov r13d, eax (pid in r13d)
+        EmitLoadRaxFromStackDisp32(0x30);             // local[6] = sysc_no
+        _code.AddRange([0x49, 0x89, 0xC4]);           // mov r12, rax (sysc_no in r12)
+
+        // Walk allproc: read proc from saved_td->td_proc
+        EmitLoadRaxFromStackDisp32(0x68);             // local[13] = saved_td
+        _code.AddRange([0x48, 0x83, 0xC0, 0x08]);     // add rax, 8 (td_proc)
+        _code.AddRange([0x48, 0x89, 0xC7]);           // mov rdi, rax
+        EmitLeaRdiRspDisp32(0x80);                    // lea rdi, [rsp + 0x80] (temp qword)
+        // kpeek64_checked(saved_td + td_proc, &proc)
+        EmitLoadRaxFromStackDisp32(0x68);             // rax = saved_td
+        _code.AddRange([0x48, 0x8D, 0x78, 0x08]);     // lea rdi, [rax + 8]
+        _code.AddRange([0x48, 0x8D, 0xB4, 0x24, 0x80, 0x00, 0x00, 0x00]); // lea rsi, [rsp + 0x80]
+        EmitCallPatch(PatchTargetNames.Kpeek64Checked);
+        _code.AddRange([0x85, 0xC0]);
+        int jnzT2WalkFail = EmitJccRel32Forward(0x0F, 0x85);
+        EmitLoadRaxFromStackDisp32(0x80);             // rax = proc
+        _code.AddRange([0x48, 0x89, 0xC5]);           // mov rbp, rax
+
+        // Skip allproc sentinel entries (proc < -0x100000000 as signed)
+        int sentinelCheck = _code.Count;
+        _code.AddRange([0x48, 0xB8]);                 // movabs rax, 0xFFFFFFFF00000000
+        _code.AddRange(BitConverter.GetBytes(unchecked((long)-0x100000000)));
+        _code.AddRange([0x48, 0x39, 0xC5]);           // cmp rbp, rax (signed)
+        int jgeSentinelOk = EmitJccRel32Forward(0x0F, 0x8D); // jge (signed >=)
+        // Sentinel: follow proc+8 (le_prev link)
+        _code.AddRange([0x48, 0x8D, 0x7D, 0x08]);     // lea rdi, [rbp + 8]
+        _code.AddRange([0x48, 0x8D, 0xB4, 0x24, 0x80, 0x00, 0x00, 0x00]); // lea rsi, [rsp + 0x80]
+        EmitCallPatch(PatchTargetNames.Kpeek64Checked);
+        _code.AddRange([0x85, 0xC0]);
+        int jnzSentinelFail = EmitJccRel32Forward(0x0F, 0x85);
+        EmitLoadRaxFromStackDisp32(0x80);
+        _code.AddRange([0x48, 0x89, 0xC5]);           // mov rbp, rax
+        // jmp sentinelCheck
+        _code.Add(0xE9);
+        _code.AddRange(BitConverter.GetBytes(sentinelCheck - (_code.Count + 4)));
+        PatchRel32Forward(jgeSentinelOk);
+
+        // Walk proc list: while (proc != 0), compare p_pid
+        int loopTop = _code.Count;
+        _code.AddRange([0x48, 0x85, 0xED]);           // test rbp, rbp
+        int jzNotFound = EmitJccRel32Forward(0x0F, 0x84);
+
+        // kpeek64_checked(proc + p_pid, &tmp) — read 4 bytes at p_pid (0xBC)
+        _code.AddRange([0x48, 0x89, 0xEF]);           // mov rdi, rbp
+        _code.AddRange([0x48, 0x81, 0xC7, 0xBC, 0x00, 0x00, 0x00]); // add rdi, 0xBC
+        _code.AddRange([0x48, 0x8D, 0xB4, 0x24, 0x88, 0x00, 0x00, 0x00]); // lea rsi, [rsp + 0x88]
+        EmitCallPatch(PatchTargetNames.Kpeek64Checked);
+        _code.AddRange([0x85, 0xC0]);
+        int jnzT2PeekFail = EmitJccRel32Forward(0x0F, 0x85);
+
+        // Compare lower 32 bits of read value with target pid
+        _code.AddRange([0x8B, 0x84, 0x24, 0x88, 0x00, 0x00, 0x00]); // mov eax, [rsp + 0x88]
+        _code.AddRange([0x44, 0x39, 0xE8]);           // cmp eax, r13d
+        int jeFoundProc = EmitJccRel8Forward(0x74);
+
+        // Not this proc: follow p_list.le_next at proc+0
+        _code.AddRange([0x48, 0x89, 0xEF]);           // mov rdi, rbp
+        _code.AddRange([0x48, 0x8D, 0xB4, 0x24, 0x80, 0x00, 0x00, 0x00]); // lea rsi, [rsp + 0x80]
+        EmitCallPatch(PatchTargetNames.Kpeek64Checked);
+        _code.AddRange([0x85, 0xC0]);
+        int jnzT2NextFail = EmitJccRel32Forward(0x0F, 0x85);
+        EmitLoadRaxFromStackDisp32(0x80);
+        _code.AddRange([0x48, 0x89, 0xC5]);           // mov rbp, rax
+        // jmp loopTop
+        int jmpLoop = _code.Count;
+        _code.Add(0xE9);
+        int disp = loopTop - (_code.Count + 4);
+        _code.AddRange(BitConverter.GetBytes(disp));
+
+        // Found proc: read first thread (proc + 16 = p_threads.tqh_first)
+        PatchRel8Forward(jeFoundProc);
+        _code.AddRange([0x48, 0x8D, 0x7D, 0x10]);     // lea rdi, [rbp + 16]
+        _code.AddRange([0x48, 0x8D, 0xB4, 0x24, 0x90, 0x00, 0x00, 0x00]); // lea rsi, [rsp + 0x90]
+        EmitCallPatch(PatchTargetNames.Kpeek64Checked);
+        _code.AddRange([0x85, 0xC0]);
+        int jnzT2ThreadFail = EmitJccRel32Forward(0x0F, 0x85);
+
+        // Build second continuation frame[14] (112 bytes) at [rsp + 0x98]:
+        // [0]=doreti_iret, [1]=MKTRAP(KEKCALL,3), [2..4]=0,
+        // [5]=local[13](caller td), [6]=target_td, [7..12]=local[7..12], [13]=0
+        EmitMovAbsRaxPatch(PatchTargetNames.DoretiIret);
+        EmitStoreRaxToStackDisp32(0x98);
+        _code.AddRange([0x48, 0xB8]);
+        var mkTrap3 = ((ulong)0xDEAD0001 << 32) | 3;
+        _code.AddRange(BitConverter.GetBytes(mkTrap3));
+        EmitStoreRaxToStackDisp32(0xA0);
+        // Zero [2..5]
+        _code.AddRange([0x48, 0x31, 0xC0]);
+        EmitStoreRaxToStackDisp32(0xA8);
+        EmitStoreRaxToStackDisp32(0xB0);
+        EmitStoreRaxToStackDisp32(0xB8);
+        EmitStoreRaxToStackDisp32(0xC0);
+        // [6] = saved_td (local[13])
+        EmitLoadRaxFromStackDisp32(0x68);
+        EmitStoreRaxToStackDisp32(0xC8);
+        // [7] = target_td
+        EmitLoadRaxFromStackDisp32(0x90);
+        EmitStoreRaxToStackDisp32(0xD0);
+        // Also store target_td into regs[RDI] for handle_syscall dispatch
+        EmitStoreToFrameFromReg(OffRdi, 0x48, 0, regBase: 3);
+        // [8..13] = local[7..12] (syscall args at offsets 0x38..0x60)
+        for (int i = 0; i < 6; i++)
+        {
+            EmitLoadRaxFromStackDisp32(0x38 + i * 8);
+            EmitStoreRaxToStackDisp32(0xD8 + i * 8);
+        }
+        // Check SYS_sysarch (165) + AMD64_GET_FSBASE (128) special case
+        _code.AddRange([0x41, 0x81, 0xFC, 0xA5, 0x00, 0x00, 0x00]); // cmp r12d, 165 (SYS_sysarch)
+        int jneNormalSyscall = EmitJccRel32Forward(0x0F, 0x85);
+        // Check first arg (local[7] at rsp+0x38) == 128 (AMD64_GET_FSBASE)
+        _code.AddRange([0x81, 0xBC, 0x24, 0x38, 0x00, 0x00, 0x00, 0x80, 0x00, 0x00, 0x00]); // cmp dword [rsp+0x38], 128
+        int jneNormalSyscall2 = EmitJccRel32Forward(0x0F, 0x85);
+
+        // --- SYS_sysarch + GET_FSBASE path ---
+        // Change MKTRAP to trap=4
+        _code.AddRange([0x48, 0xB8]);
+        var mkTrap4 = ((ulong)0xDEAD0001 << 32) | 4;
+        _code.AddRange(BitConverter.GetBytes(mkTrap4));
+        EmitStoreRaxToStackDisp32(0xA0);              // frame2[1] = MKTRAP(KEKCALL,4)
+
+        // kpeek64(regs[RDI]+td_pcb, &thread_pcb) — td_pcb = 0x3F8
+        EmitLoadFromFrameViaReg(OffRdi, 0x48, 0, regBase: 3);
+        _code.AddRange([0x48, 0x05, 0xF8, 0x03, 0x00, 0x00]); // add rax, 0x3F8
+        _code.AddRange([0x48, 0x89, 0xC7]);           // mov rdi, rax
+        _code.AddRange([0x48, 0x8D, 0xB4, 0x24, 0x80, 0x00, 0x00, 0x00]); // lea rsi, [rsp+0x80]
+        EmitCallPatch(PatchTargetNames.Kpeek64Checked);
+        _code.AddRange([0x85, 0xC0]);
+        int jnzT2FsbaseFail1 = EmitJccRel32Forward(0x0F, 0x85);
+
+        // kpeek64(thread_pcb+pcb_fsbase, &frame2[8]) — pcb_fsbase = 0x40 (+0x10 on FW>=10)
+        EmitLoadRaxFromStackDisp32(0x80);             // rax = thread_pcb
+        _code.AddRange([0x48, 0x83, 0xC0, 0x50]);     // add rax, 0x50 (pcb_fsbase with PcbShift=0x10)
+        _code.AddRange([0x48, 0x89, 0xC7]);           // mov rdi, rax
+        _code.AddRange([0x48, 0x8D, 0xB4, 0x24, 0xD8, 0x00, 0x00, 0x00]); // lea rsi, [rsp+0xD8] (frame2[8])
+        EmitCallPatch(PatchTargetNames.Kpeek64Checked);
+        _code.AddRange([0x85, 0xC0]);
+        int jnzT2FsbaseFail2 = EmitJccRel32Forward(0x0F, 0x85);
+
+        // Zero td_retval of caller thread (local[13] = saved_td at rsp+0x68)
+        EmitLoadRaxFromStackDisp32(0x68);
+        _code.AddRange([0x48, 0x05, 0x08, 0x04, 0x00, 0x00]); // add rax, 0x408
+        _code.AddRange([0x48, 0x89, 0xC7]);
+        _code.AddRange([0x48, 0xC7, 0x84, 0x24, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]); // [rsp+0x80]=0
+        _code.AddRange([0x48, 0x8D, 0xB4, 0x24, 0x80, 0x00, 0x00, 0x00]);
+        _code.AddRange([0xBA, 0x08, 0x00, 0x00, 0x00]);
+        EmitCallPatch(PatchTargetNames.CopyToKernel);
+        _code.AddRange([0x85, 0xC0]);
+        int jnzT2FsbaseFail3 = EmitJccRel32Forward(0x0F, 0x85);
+
+        // push frame2, then redirect for copyout
+        _code.AddRange([0x48, 0x89, 0xDF]);
+        _code.AddRange([0x48, 0x8D, 0xB4, 0x24, 0x98, 0x00, 0x00, 0x00]);
+        _code.AddRange([0xBA, 0x70, 0x00, 0x00, 0x00]);
+        EmitCallPatch(PatchTargetNames.PushStackChecked);
+        _code.AddRange([0x85, 0xC0]);
+        int jnzT2FsbasePushFail = EmitJccRel32Forward(0x0F, 0x85);
+
+        // regs[RAX] = &sysents[sysc_no] (for dispatch tracking)
+        _code.AddRange([0x4C, 0x89, 0xE7]);
+        // imul rdi, rdi, 48   — multiply the syscall number by the true sysent
+        // stride. A `shl rdi, 4` here would use 16 bytes per entry (the old
+        // stride) and index past the intended slot on every dispatch.
+        _code.AddRange([0x48, 0x6B, 0xFF, 0x30]);
+        EmitMovAbsRaxPatch(PatchTargetNames.SysentTable);
+        _code.AddRange([0x48, 0x01, 0xF8]);
+        EmitStoreToFrameFromReg(OffRax, 0x48, 0, regBase: 3);
+
+        // copyout dispatch: RIP=copyout, RDI=RSP+64, RSI=local[8](user buffer), RDX=8
+        EmitMovAbsRaxPatch(PatchTargetNames.CopierOut);
+        EmitStoreToFrameFromReg(OffRip, 0x48, 0, regBase: 3);
+        EmitLoadFromFrameViaReg(OffIretRsp, 0x48, 0, regBase: 3);
+        _code.AddRange([0x48, 0x83, 0xC0, 0x40]);     // add rax, 64
+        EmitStoreToFrameFromReg(OffRdi, 0x48, 0, regBase: 3);
+        EmitLoadRaxFromStackDisp32(0x40);             // local[8] = user addr for fsbase output
+        EmitStoreToFrameFromReg(OffRsi, 0x48, 0, regBase: 3);
+        _code.AddRange([0x48, 0xC7, 0x43, (byte)OffRdx, 0x08, 0x00, 0x00, 0x00]); // RDX=8
+        _code.AddRange([0x31, 0xC0]);
+        int jmpEpilogueT2Fsbase = EmitJmpRel32Forward();
+
+        // --- Normal syscall path ---
+        PatchRel32Forward(jneNormalSyscall);
+        PatchRel32Forward(jneNormalSyscall2);
+
+        // Zero target thread's td_retval before dispatch
+        EmitLoadFromFrameViaReg(OffRdi, 0x48, 0, regBase: 3); // regs[RDI] = target_td
+        _code.AddRange([0x48, 0x05, 0x08, 0x04, 0x00, 0x00]); // add rax, 0x408
+        _code.AddRange([0x48, 0x89, 0xC7]);
+        _code.AddRange([0x48, 0xC7, 0x84, 0x24, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
+        _code.AddRange([0x48, 0x8D, 0xB4, 0x24, 0x80, 0x00, 0x00, 0x00]);
+        _code.AddRange([0xBA, 0x08, 0x00, 0x00, 0x00]);
+        EmitCallPatch(PatchTargetNames.CopyToKernel);
+        _code.AddRange([0x85, 0xC0]);
+        int jnzT2RetvalFail = EmitJccRel32Forward(0x0F, 0x85);
+
+        // push_stack_checked(regs, frame2, 112)
+        _code.AddRange([0x48, 0x89, 0xDF]);
+        _code.AddRange([0x48, 0x8D, 0xB4, 0x24, 0x98, 0x00, 0x00, 0x00]);
+        _code.AddRange([0xBA, 0x70, 0x00, 0x00, 0x00]);
+        EmitCallPatch(PatchTargetNames.PushStackChecked);
+        _code.AddRange([0x85, 0xC0]);
+        int jnzT2Push2Fail = EmitJccRel32Forward(0x0F, 0x85);
+
+        // regs[RAX] = &sysents[sysc_no]
+        _code.AddRange([0x4C, 0x89, 0xE7]);
+        // imul rdi, rdi, 48   — multiply the syscall number by the true sysent
+        // stride. A `shl rdi, 4` here would use 16 bytes per entry (the old
+        // stride) and index past the intended slot on every dispatch.
+        _code.AddRange([0x48, 0x6B, 0xFF, 0x30]);
+        EmitMovAbsRaxPatch(PatchTargetNames.SysentTable);
+        _code.AddRange([0x48, 0x01, 0xF8]);
+        EmitStoreToFrameFromReg(OffRax, 0x48, 0, regBase: 3);
+
+        // Read sy_call and store to regs[RIP]
+        _code.AddRange([0x48, 0x83, 0xC0, 0x08]);
+        _code.AddRange([0x48, 0x89, 0xC7]);
+        _code.AddRange([0x48, 0x8D, 0x73, (byte)OffRip]);
+        EmitCallPatch(PatchTargetNames.Kpeek64Checked);
+        _code.AddRange([0x85, 0xC0]);
+        int jnzT2SyCallFail = EmitJccRel32Forward(0x0F, 0x85);
+
+        // regs[RSI] = RSP + 64
+        EmitLoadFromFrameViaReg(OffIretRsp, 0x48, 0, regBase: 3);
+        _code.AddRange([0x48, 0x83, 0xC0, 0x40]);
+        EmitStoreToFrameFromReg(OffRsi, 0x48, 0, regBase: 3);
+
+        // handle_syscall(regs, 0)
+        _code.AddRange([0x48, 0x89, 0xDF]);
+        _code.AddRange([0x31, 0xF6]);
+        EmitCallPatch(PatchTargetNames.SyscallHandler);
+
+        _code.AddRange([0x31, 0xC0]);
+        int jmpEpilogueT2 = EmitJmpRel32Forward();
+
+        // Not found: set ESRCH
+        PatchRel32Forward(jzNotFound);
+        _code.AddRange([0x48, 0xC7, 0x43, (byte)OffRax, 0x03, 0x00, 0x00, 0x00]); // ESRCH=3
+        // Pop saved RIP
+        _code.AddRange([0x48, 0x89, 0xDF]);
+        _code.AddRange([0x48, 0x89, 0xE6]);
+        _code.AddRange([0xBA, 0x08, 0x00, 0x00, 0x00]);
+        EmitCallPatch(PatchTargetNames.PopStackChecked);
+        EmitLoadRaxFromStackDisp32(0x00);
+        EmitStoreToFrameFromReg(OffRip, 0x48, 0, regBase: 3);
+        int jmpEpilogueT2b = EmitJmpRel32Forward();
+
+        // Copyin failed: pop saved RIP and return
+        PatchRel32Forward(jnzT2CopyFailed);
+        _code.AddRange([0x48, 0x89, 0xDF]);
+        _code.AddRange([0x48, 0x89, 0xE6]);
+        _code.AddRange([0xBA, 0x08, 0x00, 0x00, 0x00]);
+        EmitCallPatch(PatchTargetNames.PopStackChecked);
+        EmitLoadRaxFromStackDisp32(0x00);
+        EmitStoreToFrameFromReg(OffRip, 0x48, 0, regBase: 3);
+        int jmpEpilogueT2c = EmitJmpRel32Forward();
+
+        // ---- trap == 3 or 4: remote syscall result ----
+        PatchRel32Forward(jneTrap34);
         _code.AddRange([0x41, 0x83, 0xFC, 0x03]);     // cmp r12d, 3
         int jeT3 = EmitJccRel8Forward(0x74);
         _code.AddRange([0x41, 0x83, 0xFC, 0x04]);     // cmp r12d, 4
@@ -4412,23 +4900,94 @@ public sealed class KernelModuleEmitter
         EmitLoadRaxFromStackDisp32(0x68);
         EmitStoreToFrameFromReg(OffRip, 0x48, 0, regBase: 3);
 
+        // trap=3 retval copy: if trap==3 && (uint32)regs[RAX]==0,
+        // read td_retval from target thread and write to caller thread.
+        // frame[5] = caller td, frame[6] = target td (after pop, indices shift by -1
+        // relative to the original push: popped[5] = pushed[6] = caller_td)
+        _code.AddRange([0x41, 0x83, 0xFC, 0x03]);     // cmp r12d, 3
+        int jneSkipRetval = EmitJccRel8Forward(0x75);
+        EmitLoadFromFrameViaReg(OffRax, 0x48, 0, regBase: 3);
+        _code.AddRange([0x85, 0xC0]);                 // test eax, eax
+        int jnzSkipRetval = EmitJccRel8Forward(0x75);
+        // kpeek64_checked(popped[6] + td_retval, &tmp) — read target's retval
+        // td_retval = 0x408
+        EmitLoadRaxFromStackDisp32(0x30);             // popped[6] = target thread
+        _code.AddRange([0x48, 0x05, 0x08, 0x04, 0x00, 0x00]); // add rax, 0x408
+        _code.AddRange([0x48, 0x89, 0xC7]);           // mov rdi, rax
+        _code.AddRange([0x48, 0x8D, 0xB4, 0x24, 0x80, 0x00, 0x00, 0x00]); // lea rsi, [rsp+0x80]
+        EmitCallPatch(PatchTargetNames.Kpeek64Checked);
+        _code.AddRange([0x85, 0xC0]);
+        int jnzRetvalFail = EmitJccRel8Forward(0x75);
+        // copy_to_kernel(popped[5] + td_retval, &tmp, 8) — write retval to caller
+        EmitLoadRaxFromStackDisp32(0x28);             // popped[5] = caller td
+        _code.AddRange([0x48, 0x05, 0x08, 0x04, 0x00, 0x00]); // add rax, 0x408
+        _code.AddRange([0x48, 0x89, 0xC7]);           // mov rdi, rax (dst = caller td_retval)
+        _code.AddRange([0x48, 0x8D, 0xB4, 0x24, 0x80, 0x00, 0x00, 0x00]); // lea rsi, [rsp+0x80] (src = &tmp)
+        _code.AddRange([0xBA, 0x08, 0x00, 0x00, 0x00]); // mov edx, 8
+        EmitCallPatch(PatchTargetNames.CopyToKernel);
+        int jmpAfterRetval = EmitJmpRel32Forward();
+
+        PatchRel8Forward(jnzRetvalFail);
+        _code.AddRange([0x48, 0xC7, 0x43, (byte)OffRax, 0x0E, 0x00, 0x00, 0x00]); // EFAULT
+
+        PatchRel8Forward(jneSkipRetval);
+        PatchRel8Forward(jnzSkipRetval);
+
         int jmpEpilogueT3 = EmitJmpRel32Forward();
 
-        // ---- Failure paths ----
+        // ---- T1 failure paths (no residual pop needed) ----
         PatchRel32Forward(jnzT1PopFail);
         PatchRel32Forward(jnzT1CopyFail);
-        PatchRel32Forward(jnzT1WriteFail);
-        // Set regs[RAX] = EFAULT for trap 1 failures
-        _code.AddRange([0x48, 0xC7, 0x43, (byte)OffRax, 0x0E, 0x00, 0x00, 0x00]);
+        PatchRel32Forward(jnzT1RetvalFail);
+        PatchRel32Forward(jnzT1ReadDrFail);
+        PatchRel32Forward(jnzT1PcbPtrFail);
+        PatchRel32Forward(jnzT1GetDrFail);
+        PatchRel32Forward(jnzT1SetDrFail);
+        _code.AddRange([0x48, 0xC7, 0x43, (byte)OffRax, 0x0E, 0x00, 0x00, 0x00]); // EFAULT
+        int jmpT1FailEpilogue = EmitJmpRel32Forward();
+
+        // ---- T2 failure paths: pop 8 residual bytes + restore RIP, then EFAULT ----
+        PatchRel32Forward(jnzT2PopFail);
+        PatchRel32Forward(jnzT2WalkFail);
+        PatchRel32Forward(jnzSentinelFail);
+        PatchRel32Forward(jnzT2PeekFail);
+        PatchRel32Forward(jnzT2NextFail);
+        PatchRel32Forward(jnzT2ThreadFail);
+        PatchRel32Forward(jnzT2RetvalFail);
+        PatchRel32Forward(jnzT2Push2Fail);
+        PatchRel32Forward(jnzT2SyCallFail);
+        PatchRel32Forward(jnzT2FsbaseFail1);
+        PatchRel32Forward(jnzT2FsbaseFail2);
+        PatchRel32Forward(jnzT2FsbaseFail3);
+        PatchRel32Forward(jnzT2FsbasePushFail);
+        _code.AddRange([0x48, 0xC7, 0x43, (byte)OffRax, 0x0E, 0x00, 0x00, 0x00]); // EFAULT
+        // Pop residual 8 bytes from kernel stack to get return RIP
+        _code.AddRange([0x48, 0x89, 0xDF]);           // mov rdi, rbx
+        _code.AddRange([0x48, 0x89, 0xE6]);           // mov rsi, rsp
+        _code.AddRange([0xBA, 0x08, 0x00, 0x00, 0x00]); // mov edx, 8
+        EmitCallPatch(PatchTargetNames.PopStackChecked);
+        // Restore RIP from popped value (ignore pop failure — best effort)
+        EmitLoadRaxFromStackDisp32(0x00);
+        EmitStoreToFrameFromReg(OffRip, 0x48, 0, regBase: 3);
+        int jmpT2FailEpilogue = EmitJmpRel32Forward();
 
         PatchRel32Forward(jnzT3PopFail);
         PatchRel32Forward(jneUnhandled);
 
         // Epilogue:
+        PatchRel32Forward(jmpT1FailEpilogue);
+        PatchRel32Forward(jmpT1RollbackEpilogue);
+        PatchRel32Forward(jmpT2FailEpilogue);
         PatchRel32Forward(jmpEpilogueT1);
+        PatchRel32Forward(jmpEpilogueT2);
+        PatchRel32Forward(jmpEpilogueT2Fsbase);
+        PatchRel32Forward(jmpEpilogueT2b);
+        PatchRel32Forward(jmpEpilogueT2c);
+        PatchRel32Forward(jmpAfterRetval);
         PatchRel32Forward(jmpEpilogueT3);
-        EmitAddRspImm32(0x80);
+        EmitAddRspImm32(0x110);
         _code.Add(0x5D);                              // pop rbp
+        _code.AddRange([0x41, 0x5D]);                 // pop r13
         _code.AddRange([0x41, 0x5C]);                 // pop r12
         _code.Add(0x5B);                              // pop rbx
         _code.Add(0xC3);                              // ret
@@ -5318,7 +5877,6 @@ public sealed class KernelModuleEmitter
     {
         int entry = _code.Count;
 
-        // Jump past inline static storage.
         int jmpPastData = EmitJmpRel32Forward();
 
         // Inline static state (24 bytes):
@@ -5329,60 +5887,81 @@ public sealed class KernelModuleEmitter
         //   +0x14: xsave_edx (uint32)
         int stateOffset = _code.Count;
         _code.AddRange(new byte[24]);
+
+        // 64-byte aligned xsave area (4096 bytes) for XSAVE/XRSTOR.
+        int afterState = _code.Count;
+        int alignPad = (64 - (afterState % 64)) % 64;
+        _code.AddRange(new byte[alignPad]);
+        _xsaveAreaOffset = _code.Count;
+        _code.AddRange(new byte[4096]);
+
+        // MXCSR reset value (4 bytes): 0x1F80
+        int mxcsrConstOffset = _code.Count;
+        _code.AddRange([0x80, 0x1F, 0x00, 0x00]);
+
         PatchRel32Forward(jmpPastData);
 
-        // Check nesting: if (fpu_depth++ != 0) return 0
         EmitLeaRegRipRelative(0, stateOffset);        // lea rax, [rip + state]
-        _code.AddRange([0x48, 0x89, 0xC1]);           // mov rcx, rax (state base)
-        _code.AddRange([0x8B, 0x01]);                 // mov eax, [rcx] (fpu_depth)
+        _code.AddRange([0x48, 0x89, 0xC1]);           // mov rcx, rax
+        _code.AddRange([0x8B, 0x01]);                 // mov eax, [rcx]
         _code.AddRange([0x8D, 0x50, 0x01]);           // lea edx, [rax + 1]
-        _code.AddRange([0x89, 0x11]);                 // mov [rcx], edx  (fpu_depth++)
+        _code.AddRange([0x89, 0x11]);                 // mov [rcx], edx
         _code.AddRange([0x85, 0xC0]);                 // test eax, eax
         int jzFirstEntry = EmitJccRel8Forward(0x74);
-        // Nested: return 0
         _code.AddRange([0x31, 0xC0]);
         _code.Add(0xC3);
 
         PatchRel8Forward(jzFirstEntry);
-        // First entry: save rcx (state base) across calls
         _code.Add(0x53);                              // push rbx
         _code.AddRange([0x48, 0x89, 0xCB]);           // mov rbx, rcx
 
-        // fpu_state_saved = 0
         _code.AddRange([0xC7, 0x43, 0x04, 0x00, 0x00, 0x00, 0x00]); // mov dword [rbx+4], 0
 
-        // read_cr0_checked(&saved_cr0)
         _code.AddRange([0x48, 0x8D, 0x7B, 0x08]);     // lea rdi, [rbx + 8]
         EmitCallPatch(PatchTargetNames.ReadCr0Checked);
         _code.AddRange([0x85, 0xC0]);
         int jnzCr0Fail = EmitJccRel32Forward(0x0F, 0x85);
 
-        // write_cr0_checked(saved_cr0 & ~8)  -- clear CR0.TS (bit 3)
         _code.AddRange([0x48, 0x8B, 0x7B, 0x08]);     // mov rdi, [rbx + 8]
         _code.AddRange([0x48, 0x83, 0xE7, 0xF7]);     // and rdi, ~8
         EmitCallPatch(PatchTargetNames.WriteCr0Checked);
         _code.AddRange([0x85, 0xC0]);
         int jnzWriteFail = EmitJccRel32Forward(0x0F, 0x85);
 
-        // XSAVE state saved via function in xsave_area target.
-        // fpu_state_saved = 1
-        _code.AddRange([0xC7, 0x43, 0x04, 0x01, 0x00, 0x00, 0x00]);
+        // XGETBV: read XCR0 feature mask into EDX:EAX
+        _code.AddRange([0x31, 0xC9]);                 // xor ecx, ecx
+        _code.AddRange([0x0F, 0x01, 0xD0]);           // xgetbv
+        _code.AddRange([0x89, 0x43, 0x10]);           // mov [rbx + 0x10], eax
+        _code.AddRange([0x89, 0x53, 0x14]);           // mov [rbx + 0x14], edx
 
-        // return 0
-        _code.AddRange([0x31, 0xC0]);
+        // XSAVE [xsave_area]: save current FPU/SSE/AVX state
+        EmitLeaRegRipRelative(7, _xsaveAreaOffset);   // lea rdi, [rip + xsave_area]
+        _code.AddRange([0x0F, 0xAE, 0x27]);           // xsave [rdi]
+
+        // FINIT: reset x87 FPU
+        _code.AddRange([0xDB, 0xE3]);                 // fninit
+
+        // LDMXCSR 0x1F80: reset SSE control word
+        EmitLeaRegRipRelative(0, mxcsrConstOffset);   // lea rax, [rip + mxcsr_const]
+        _code.AddRange([0x0F, 0xAE, 0x10]);           // ldmxcsr [rax]
+
+        _code.AddRange([0xC7, 0x43, 0x04, 0x01, 0x00, 0x00, 0x00]); // fpu_state_saved = 1
+
+        _code.AddRange([0x31, 0xC0]);                 // xor eax, eax
         _code.Add(0x5B);                              // pop rbx
         _code.Add(0xC3);
 
-        // Failure: reset depth, return 1
         PatchRel32Forward(jnzCr0Fail);
         PatchRel32Forward(jnzWriteFail);
-        _code.AddRange([0xC7, 0x03, 0x00, 0x00, 0x00, 0x00]); // mov dword [rbx], 0
+        _code.AddRange([0xC7, 0x03, 0x00, 0x00, 0x00, 0x00]); // fpu_depth = 0
         _code.AddRange([0xB8, 0x01, 0x00, 0x00, 0x00]); // mov eax, 1
         _code.Add(0x5B);                              // pop rbx
         _code.Add(0xC3);
 
         return entry;
     }
+
+    private int _xsaveAreaOffset;
 
     /// <summary>
     /// Emit the FPU context exit function. Restores the FPU/SSE/AVX state
@@ -5419,6 +5998,14 @@ public sealed class KernelModuleEmitter
         // if (!fpu_state_saved) return
         _code.AddRange([0x83, 0x79, 0x04, 0x00]);     // cmp dword [rcx+4], 0
         int jzNoState = EmitJccRel8Forward(0x74);
+
+        // XRSTOR [xsave_area]: restore saved FPU/SSE/AVX state
+        _code.Add(0x51);                              // push rcx
+        _code.AddRange([0x8B, 0x41, 0x10]);           // mov eax, [rcx + 0x10] (xsave_eax)
+        _code.AddRange([0x8B, 0x51, 0x14]);           // mov edx, [rcx + 0x14] (xsave_edx)
+        EmitLeaRegRipRelative(7, _xsaveAreaOffset);   // lea rdi, [rip + xsave_area]
+        _code.AddRange([0x0F, 0xAE, 0x2F]);           // xrstor [rdi]
+        _code.Add(0x59);                              // pop rcx
 
         // write_cr0_checked(saved_cr0)
         _code.Add(0x51);                              // push rcx
@@ -5500,37 +6087,41 @@ public sealed class KernelModuleEmitter
         _code.AddRange([0x85, 0xFF]);                 // test edi, edi
         int jsNeg = EmitJccRel8Forward(0x78);
 
+        // Save callee-saved regs and preserve inputs (EDI=key_id, RSI=output buf)
+        _code.Add(0x53);                              // push rbx
+        _code.AddRange([0x41, 0x54]);                 // push r12
+        _code.AddRange([0x49, 0x89, 0xF4]);           // mov r12, rsi (save output buffer)
+        _code.AddRange([0x89, 0xFB]);                 // mov ebx, edi (save key_id)
+
         EmitMovAbsRcxPatch(PatchTargetNames.SharedAreaBase);
-        // Check ready_mask bit
-        _code.AddRange([0x48, 0x8B, 0x41, 0x08]);     // mov rax, [rcx + 8]
-        _code.AddRange([0x48, 0x89, 0xFA]);           // mov rdx, rdi (save key_id)
-        _code.AddRange([0x89, 0xF9]);                 // mov ecx_low, edi
-        // Need to preserve rcx (shared_area). Save it.
-        _code.Add(0x51);                              // push rcx
+        _code.AddRange([0x48, 0x8B, 0x41, 0x08]);     // mov rax, [rcx + 8] (ready_mask)
+        _code.AddRange([0x89, 0xD9]);                 // mov ecx, ebx (key_id for shift — clobbers rcx)
         _code.AddRange([0x48, 0xD3, 0xE8]);           // shr rax, cl
         _code.AddRange([0xA8, 0x01]);                 // test al, 1
-        _code.Add(0x59);                              // pop rcx
         int jzNotReady = EmitJccRel8Forward(0x74);
 
-        // memcpy(output, shared_area + 0x10 + key_id * 32, 32)
-        // key_data starts at offset 0x10 in shared_area
-        _code.AddRange([0x48, 0x89, 0xFE]);           // mov rsi, rdi (placeholder, overwritten below)
-        // rdi was key_id; rsi must point to the key data source.
-        // rsi was the output buffer from the caller; restructure registers.
-        // dst = rsi (output), src = shared_area + 0x10 + key_id * 32
-        _code.AddRange([0x48, 0x89, 0xF7]);           // mov rdi, rsi (dst = output)
-        // src = rcx + 0x10 + rdx * 32
-        _code.AddRange([0x48, 0xC1, 0xE2, 0x05]);     // shl rdx, 5  (key_id * 32)
-        _code.AddRange([0x48, 0x8D, 0x74, 0x11, 0x10]); // lea rsi, [rcx + rdx + 0x10]
+        // memcpy(output, shared_area + 0x20 + key_id * 32, 32)
+        EmitMovAbsRcxPatch(PatchTargetNames.SharedAreaBase);
+        _code.AddRange([0x89, 0xDA]);                 // mov edx, ebx (key_id)
+        _code.AddRange([0x48, 0xC1, 0xE2, 0x05]);     // shl rdx, 5
+        _code.AddRange([0x48, 0x8D, 0x74, 0x11, 0x20]); // lea rsi, [rcx + rdx + 0x20]
+        _code.AddRange([0x4C, 0x89, 0xE7]);           // mov rdi, r12 (dst = saved output buffer)
         _code.AddRange([0xB9, 0x20, 0x00, 0x00, 0x00]); // mov ecx, 32
         _code.AddRange([0xF3, 0xA4]);                 // rep movsb
 
         _code.AddRange([0xB8, 0x01, 0x00, 0x00, 0x00]); // mov eax, 1
+        _code.AddRange([0x41, 0x5C]);                 // pop r12
+        _code.Add(0x5B);                              // pop rbx
+        _code.Add(0xC3);
+
+        PatchRel8Forward(jzNotReady);
+        _code.AddRange([0x31, 0xC0]);                 // xor eax, eax
+        _code.AddRange([0x41, 0x5C]);                 // pop r12
+        _code.Add(0x5B);                              // pop rbx
         _code.Add(0xC3);
 
         PatchRel8Forward(jaeOob);
         PatchRel8Forward(jsNeg);
-        PatchRel8Forward(jzNotReady);
         _code.AddRange([0x31, 0xC0]);                 // xor eax, eax
         _code.Add(0xC3);
 
@@ -5600,10 +6191,10 @@ public sealed class KernelModuleEmitter
         _code.AddRange([0x48, 0x0F, 0xBD, 0xC0]);     // bsr rax, rax (bit scan reverse)
         // rax = key_idx
 
-        // Copy key data: memcpy(shared_area + 0x10 + key_idx * 32, key_data, 32)
+        // Copy key data: memcpy(shared_area + 0x20 + key_idx * 32, key_data, 32)
         _code.AddRange([0x48, 0x89, 0xC1]);           // mov rcx, rax (save key_idx)
         _code.AddRange([0x48, 0xC1, 0xE0, 0x05]);     // shl rax, 5
-        _code.AddRange([0x48, 0x8D, 0x7C, 0x03, 0x10]); // lea rdi, [rbx + rax + 0x10]
+        _code.AddRange([0x48, 0x8D, 0x7C, 0x03, 0x20]); // lea rdi, [rbx + rax + 0x20]
         _code.AddRange([0x4C, 0x89, 0xE6]);           // mov rsi, r12 (key_data)
         _code.Add(0x51);                              // push rcx (save key_idx)
         _code.AddRange([0xB9, 0x20, 0x00, 0x00, 0x00]); // mov ecx, 32
@@ -5656,10 +6247,10 @@ public sealed class KernelModuleEmitter
 
         // bit = 1 << key_id
         _code.AddRange([0x48, 0xB8, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
-        _code.AddRange([0x89, 0xF9]);                 // mov ecx_shift, edi
-        _code.Add(0x51);                              // push rcx (shared_area)
+        _code.Add(0x51);                              // push rcx (shared_area — before clobber)
+        _code.AddRange([0x89, 0xF9]);                 // mov ecx, edi (key_id for shift)
         _code.AddRange([0x48, 0xD3, 0xE0]);           // shl rax, cl
-        _code.Add(0x59);                              // pop rcx
+        _code.Add(0x59);                              // pop rcx (restore shared_area)
         _code.AddRange([0x48, 0x89, 0xC2]);           // mov rdx, rax (bit)
 
         // Atomically clear ready_mask: lock and [rcx + 8], ~bit

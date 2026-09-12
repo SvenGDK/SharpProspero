@@ -46,14 +46,22 @@ public sealed class TextBox(string label, string text = "", string placeholder =
         if (isFocused)
             surface.DrawRect(Bounds.X, Bounds.Y, Bounds.Width, Bounds.Height, theme.Accent);
 
-        int textY = CenterTextY(Bounds, theme.TextScale);
-        surface.DrawText(Label, Bounds.X + theme.Padding, textY, theme.TextScale, theme.Text);
+        int textY = CenterTextY(Bounds, theme);
+        int labelWidth = theme.MeasureText(Label);
+        theme.DrawClipped(surface, Label, Bounds.X + theme.Padding, textY, theme.Text, Bounds.Width - (2 * theme.Padding));
 
+        // The value takes the room left after the label and is shortened to fit, so a long path never
+        // overwrites the label or spills off the field.
         bool empty = string.IsNullOrEmpty(Text);
         string shown = empty ? Placeholder : Text;
-        int shownWidth = Surface.MeasureText(shown, theme.TextScale);
-        surface.DrawText(shown, Bounds.X + Bounds.Width - theme.Padding - shownWidth, textY, theme.TextScale,
-            empty ? theme.TextMuted : theme.Text);
+        int shownWidth = theme.MeasureText(shown);
+        int room = Bounds.Right - theme.Padding - (Bounds.X + theme.Padding + labelWidth + theme.Spacing);
+        if (room > 0)
+        {
+            int drawWidth = shownWidth < room ? shownWidth : room;
+            theme.DrawClipped(surface, shown, Bounds.Right - theme.Padding - drawWidth, textY,
+                empty ? theme.TextMuted : theme.Text, drawWidth);
+        }
     }
 
     /// <inheritdoc />

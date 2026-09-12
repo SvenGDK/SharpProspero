@@ -56,6 +56,11 @@ public enum SystemModuleId : ushort
     /// <summary>FreeType font support.</summary>
     FontFt = 0x0098,
 
+    /// <summary>The FreeType OpenType backend the font renderer draws glyphs through. It must be
+    /// loaded alongside <see cref="Font"/> and <see cref="FontFt"/> before a scalable font is created;
+    /// without it the renderer reaches an unresolved glyph routine and the process faults.</summary>
+    FreeTypeOt = 0x0099,
+
     /// <summary>Audio/video playback.</summary>
     AvPlayer = 0x00A5,
 

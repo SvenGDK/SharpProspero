@@ -16,7 +16,6 @@ public sealed class TabView : UiElement
 {
     private readonly List<(string Title, UiElement Content)> _tabs = [];
     private int _selectedIndex;
-    private BitmapTextFont? _font;
 
     /// <summary>The tab titles, in the order they were added.</summary>
     public IReadOnlyList<string> Titles
@@ -115,11 +114,6 @@ public sealed class TabView : UiElement
         bool rowFocused = ReferenceEquals(focused, this);
         int tabWidth = Bounds.Width / _tabs.Count;
 
-        // The built-in font is kept between frames and rebuilt only when the theme's scale changes, so
-        // shortening every tab title each frame allocates nothing.
-        if (_font is null || _font.Scale != theme.TextScale)
-            _font = new BitmapTextFont(theme.TextScale);
-
         for (int i = 0; i < _tabs.Count; i++)
         {
             int x = Bounds.X + (i * tabWidth);
@@ -129,11 +123,11 @@ public sealed class TabView : UiElement
             Color background = active ? (rowFocused ? theme.PanelFocused : theme.Panel) : theme.Background;
             surface.FillRect(x, Bounds.Y, width, headerHeight, background);
 
-            string title = TextLayout.Truncate(_font, _tabs[i].Title, width - (2 * theme.Padding));
-            int textWidth = Surface.MeasureText(title, theme.TextScale);
+            string title = TextLayout.Truncate(theme.Font, _tabs[i].Title, width - (2 * theme.Padding));
+            int textWidth = theme.MeasureText(title);
             int textX = x + ((width - textWidth) / 2);
-            int textY = Bounds.Y + ((headerHeight - (BitmapFont.GlyphSize * theme.TextScale)) / 2);
-            surface.DrawText(title, textX, textY, theme.TextScale, active ? theme.Text : theme.TextMuted);
+            int textY = Bounds.Y + ((headerHeight - theme.LineHeight) / 2);
+            theme.DrawText(surface, title, textX, textY, active ? theme.Text : theme.TextMuted);
 
             // A bar under the active tab marks the page being shown.
             if (active)

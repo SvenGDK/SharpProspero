@@ -78,8 +78,8 @@ public sealed class Gauge : UiElement
                 _lastPercent = percent;
                 _percentLabel = percent.ToString() + "%";
             }
-            int textWidth = Surface.MeasureText(_percentLabel, theme.TextScale);
-            surface.DrawText(_percentLabel, cx - (textWidth / 2), cy - (theme.LineHeight / 2), theme.TextScale, theme.Text);
+            int textWidth = theme.MeasureText(_percentLabel);
+            theme.DrawText(surface, _percentLabel, cx - (textWidth / 2), cy - (theme.LineHeight / 2), theme.Text);
         }
     }
 }

@@ -30,7 +30,6 @@ public sealed class Toast
     private string _message = "";
     private float _remaining;
     private float _total;
-    private BitmapTextFont? _font;
 
     /// <summary>How far in from the bottom edge the banner sits, in pixels. Default 48.</summary>
     public int BottomMargin { get; set; } = 48;
@@ -88,8 +87,8 @@ public sealed class Toast
         if (!IsVisible)
             return;
 
-        int textWidth = Surface.MeasureText(_message, theme.TextScale);
-        int textHeight = BitmapFont.GlyphSize * theme.TextScale;
+        int textWidth = theme.MeasureText(_message);
+        int textHeight = theme.LineHeight;
         int width = Math.Min(surface.Width - (2 * theme.Padding), textWidth + (4 * theme.Padding));
         int height = textHeight + (2 * theme.Padding);
         int x = (surface.Width - width) / 2;
@@ -107,14 +106,11 @@ public sealed class Toast
         surface.FillRoundedRect(x, y, width, height, theme.Padding, panel);
         surface.DrawRoundedRect(x, y, width, height, theme.Padding, border);
 
-        // The built-in font is kept between frames and rebuilt only when the theme's scale changes.
-        if (_font is null || _font.Scale != theme.TextScale)
-            _font = new BitmapTextFont(theme.TextScale);
-        surface.DrawText(
-            TextLayout.Truncate(_font, _message, width - (2 * theme.Padding)),
+        theme.DrawText(
+            surface,
+            TextLayout.Truncate(theme.Font, _message, width - (2 * theme.Padding)),
             x + ((width - Math.Min(textWidth, width - (2 * theme.Padding))) / 2),
             y + theme.Padding,
-            theme.TextScale,
             text);
     }
 }

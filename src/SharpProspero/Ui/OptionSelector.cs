@@ -57,15 +57,20 @@ public sealed class OptionSelector : UiElement
         if (isFocused)
             surface.DrawRect(Bounds.X, Bounds.Y, Bounds.Width, Bounds.Height, theme.Accent);
 
-        int textY = CenterTextY(Bounds, theme.TextScale);
-        surface.DrawText(Text, Bounds.X + theme.Padding, textY, theme.TextScale, theme.Text);
+        int textY = CenterTextY(Bounds, theme);
+        theme.DrawClipped(surface, Text, Bounds.X + theme.Padding, textY, theme.Text, Bounds.Width - (2 * theme.Padding));
 
         // Drawn with characters the font has. It covers printable text only and folds anything else
         // to a blank, so the arrows that were here were drawn as two empty cells that still took up
         // their width.
         string option = "< " + SelectedOption + " >";
-        int optionWidth = Surface.MeasureText(option, theme.TextScale);
-        surface.DrawText(option, Bounds.X + Bounds.Width - theme.Padding - optionWidth, textY, theme.TextScale, theme.Text);
+        int optionWidth = theme.MeasureText(option);
+        int optionRoom = Bounds.Right - theme.Padding - (Bounds.X + theme.Padding + theme.MeasureText(Text) + theme.Padding);
+        if (optionRoom > 0)
+        {
+            int shownWidth = optionWidth < optionRoom ? optionWidth : optionRoom;
+            theme.DrawClipped(surface, option, Bounds.Right - theme.Padding - shownWidth, textY, theme.Text, shownWidth);
+        }
     }
 
     /// <inheritdoc />

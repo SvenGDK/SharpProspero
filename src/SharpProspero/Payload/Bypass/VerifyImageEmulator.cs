@@ -112,25 +112,26 @@ public static class VerifyImageMailbox
 public static unsafe class VerifyImageEmulator
 {
     /// <summary>
-    /// Handle base for fake key identifiers. Each registration produces two handles:
-    /// <c>HandleBase + (index * 2 + 1)</c> for the encryption key and
-    /// <c>HandleBase + (index * 2 + 2)</c> for the signing key.
+    /// Handle base for fake key identifiers. Each fake key slot in the shared area
+    /// carries a handle formed as <c>HandleBase | (uint8)(slotIndex + 1)</c>. The
+    /// kernel-side XTS/HMAC handler recovers the slot index from the low byte
+    /// (<c>(handle &amp; 0xFF) - 1</c>); the encoding must match on both sides.
     /// </summary>
     public const uint HandleBase = 0x13374100;
 
     /// <summary>
-    /// Computes the encryption key handle for a given registration index.
+    /// Computes the encryption key handle for a given registration slot.
     /// </summary>
-    /// <param name="index">Zero-based index from the fake key registration.</param>
+    /// <param name="index">Zero-based slot index from the fake key registration.</param>
     /// <returns>The encryption key handle.</returns>
-    public static uint EkeyHandleFromIndex(int index) => HandleBase + (uint)(index * 2 + 1);
+    public static uint EkeyHandleFromIndex(int index) => HandleBase | ((uint)(index + 1) & 0xFF);
 
     /// <summary>
-    /// Computes the signing key handle for a given registration index.
+    /// Computes the signing key handle for a given registration slot.
     /// </summary>
-    /// <param name="index">Zero-based index from the fake key registration.</param>
+    /// <param name="index">Zero-based slot index from the fake key registration.</param>
     /// <returns>The signing key handle.</returns>
-    public static uint SkeyHandleFromIndex(int index) => HandleBase + (uint)(index * 2 + 2);
+    public static uint SkeyHandleFromIndex(int index) => HandleBase | ((uint)(index + 1) & 0xFF);
 
     /// <summary>
     /// Writes a <c>verifyImage</c> success response into the 0x80-byte kernel buffer at

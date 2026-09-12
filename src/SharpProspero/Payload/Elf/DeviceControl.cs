@@ -103,11 +103,12 @@ public unsafe struct LvdIoctlAttach
 }
 
 /// <summary>
-/// LVD detach parameters.
+/// LVD detach parameters (40 bytes).
 /// </summary>
 [StructLayout(LayoutKind.Sequential)]
-public struct LvdIoctlDetach
+public unsafe struct LvdIoctlDetach
 {
-    /// <summary>Device identifier to detach.</summary>
-    public uint DeviceId;
+    public uint Reserved0;
+    public int DeviceId;
+    public fixed byte Reserved[0x20];
 }

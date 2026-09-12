@@ -56,9 +56,14 @@ public static unsafe class PayloadKernelPagingAdvanced
         ulong flags = (pde & 0xFFF) | (pde & 0x8000000000000000UL); // Preserve flags + NX bit
         flags &= ~PdePsBit; // Clear PS bit
 
-        // Allocate a new 4 KB page table page.
-        ulong ptPhys = PayloadKfncall.Call(io, sysentsAddr, mallocFn, 4096, 0);
-        if (ptPhys == 0) return false;
+        // Allocate a new 4 KB page table page. Kernel malloc returns a KERNEL
+        // VIRTUAL address; a PDE entry takes the PT's physical base, so the
+        // malloc result must be translated via VirtToPhys before it can be
+        // stored in pdeAddr or used to reach the PT through the DMAP.
+        ulong ptKva = PayloadKfncall.Call(io, sysentsAddr, mallocFn, 4096, 0);
+        if (ptKva == 0) return false;
+        ulong ptPhys = KernelPaging.VirtToPhys(io, cr3, dmapBase, ptKva);
+        if (ptPhys == ulong.MaxValue) return false;
 
         // Fill 512 PTEs pointing at consecutive 4 KB pages within the 2 MB region.
         ulong ptVirt = dmapBase + ptPhys;
@@ -70,6 +75,10 @@ public static unsafe class PayloadKernelPagingAdvanced
 
         // Replace the 2 MB PDE with a pointer to the new PT page.
         io.WriteU64(pdeAddr, ptPhys | (flags & 0x67)); // Present + RW + User + Accessed
+
+        // Flush the TLB so subsequent accesses to the split range use the new
+        // 4 KB PTEs instead of the cached 2 MB superpage mapping.
+        KernelPaging.InvalidateTlb(io, sysentsAddr, PayloadEntryPoint.Args->KernelDataBase);
 
         return true;
     }
@@ -176,7 +185,7 @@ public static unsafe class PayloadKernelPagingAdvanced
         {
             ulong va = textStart + offset;
             ulong pa = KernelPaging.VirtToPhys(io, cr3, dmapBase, va);
-            if (pa == 0) continue;
+            if (pa == ulong.MaxValue) continue;
 
             int pageLen = (int)Math.Min(4096, textSize - offset);
             io.Read(dmapBase + pa, buf, pageLen);
@@ -186,7 +195,7 @@ public static unsafe class PayloadKernelPagingAdvanced
             if (offset + 4096 < textSize)
             {
                 ulong nextPa = KernelPaging.VirtToPhys(io, cr3, dmapBase, va + 4096);
-                if (nextPa != 0)
+                if (nextPa != ulong.MaxValue)
                 {
                     overflowLen = (int)Math.Min(4, textSize - offset - 4096);
                     io.Read(dmapBase + nextPa, buf + 4096, overflowLen);

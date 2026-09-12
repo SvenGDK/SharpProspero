@@ -238,23 +238,25 @@ decoded pixels for drawing; disposing the image frees them. A decoded image carr
 so `BlitBlended` draws it over the background as a sprite while `Blit` copies it opaquely. `JpegImage`
 decodes JPEG the same way (load `SystemModuleId.JpegDec`).
 
-`BmpImage` reads BMP and `BmpEncoder` writes it with no system module — the format is uncompressed, so
-the SDK handles it on its own. It is a dependable interchange format for a file browser or an editor,
-and a fallback when no decode module is loaded.
+`BmpImage` reads BMP and `BmpEncoder` writes it with no system module. The decoder reads the full range
+of BMP forms — 1-, 4- and 8-bit palettized, 16-bit (5-5-5 and 5-6-5), 24- and 32-bit, the bit-field and
+run-length (RLE8/RLE4) compressions, and both top-down and bottom-up rows — so it is a dependable
+interchange format for a file browser or an editor, and a fallback when no decode module is loaded.
 
 ```csharp
-using var picture = BmpImage.Load("/data/picture.bmp");   // 24- or 32-bit BMP
+using var picture = BmpImage.Load("/data/picture.bmp");   // any common BMP form
 display.BackBuffer.Blit(picture.AsSurface(), 0, 0);
 
 BmpEncoder.Save(display.BackBuffer, "/data/shot.bmp");     // export a 24-bit BMP
 ```
 
 `TgaImage` and `TgaEncoder` read and write TGA, a simple lossless format that editors and asset
-pipelines export, again with no module. Unlike BMP it keeps a proper alpha channel and reads
-run-length-compressed files.
+pipelines export, again with no module. The decoder reads true-colour (15-, 16-, 24- and 32-bit),
+colour-mapped and grayscale images, uncompressed or run-length-encoded, with the origin in any corner;
+unlike BMP it keeps a proper alpha channel.
 
 ```csharp
-using var texture = TgaImage.Load("/app0/texture.tga");     // 24- or 32-bit, plain or RLE
+using var texture = TgaImage.Load("/app0/texture.tga");     // true-colour, indexed or grayscale; plain or RLE
 display.BackBuffer.BlitBlended(texture.AsSurface(), x, y);
 
 TgaEncoder.Save(display.BackBuffer, "/data/shot.tga");      // export 32-bit BGRA
@@ -274,6 +276,19 @@ display.BackBuffer.BlitBlended(frame.AsSurface(), x, y);
 Each `GifFrame` exposes `AsSurface` and `DelayMilliseconds`; the composed pixels carry transparency as an
 alpha of zero, so `BlitBlended` overlays a frame while `Blit` copies it opaquely. `LoopCount` reports how
 many times the animation repeats (0 for forever), and `First` is the only frame of a still GIF.
+
+`GifEncoder` writes GIF, also with no module: `Encode`/`Save` write a still from a surface, and
+`EncodeAnimation`/`SaveAnimation` write an animation from a list of `GifFrameSource` (each a surface with
+a delay and a disposal method), with an optional loop count. It builds a colour table from the pixels,
+quantizing to 256 colours when an image has more, and carries a fully transparent pixel through as the
+GIF transparent index.
+
+```csharp
+GifEncoder.Save(display.BackBuffer, "/data/capture.gif");
+GifEncoder.SaveAnimation(
+    [new GifFrameSource(frame0, delayMilliseconds: 100), new GifFrameSource(frame1, 100)],
+    "/data/loop.gif", loopCount: 0);
+```
 
 ## Off-screen buffers
 
@@ -355,17 +370,32 @@ int width = font.MeasureText("Hello, world");
 ```
 
 `PixelSize` is settable, so one loaded font can be re-sized between draws; sizes below 1 or above 1024
-pixels are pulled into that range. `LineHeight` is the distance from one line to the next and
-`BaselineOffset` the distance from the top of a line down to its baseline, both as the font itself
-reports them at the current size, so both move when the size changes. `DrawText` adds `BaselineOffset`
-for you, which is how it takes a line top where `DrawTextOnBaseline` takes a baseline. `Load` also takes
-`memoryBudgetBytes`, the size of the block reserved for the font; the default suits a UI font and
-anything under 256 KB is refused.
+pixels are pulled into that range. Setting it moves both the rasterizer scale and the layout scale
+together, so `LineHeight` (the distance from one line to the next) and `BaselineOffset` (the distance
+from the top of a line down to its baseline) track the size. `DrawText` adds `BaselineOffset` for you,
+which is how it takes a line top where `DrawTextOnBaseline` takes a baseline. Measuring and drawing both
+step the pen through the same advance, including the kerning between each pair of glyphs, so a measured
+width and a drawn line always agree.
 
-`TrueTypeFont` and `BitmapTextFont` — the built-in glyphs wrapped as a font, `new BitmapTextFont(scale)` —
-both implement `ITextFont` (`LineHeight`, `MeasureText`, `DrawText`), so `TextLayout` and the interface
-controls work the same whichever one you choose. `BitmapFont` itself is only the glyph table
-`BitmapTextFont` draws from.
+To draw with one of the built-in fonts already on the console, with no font file of your own, open a
+`SystemFont` instead. It covers Latin, Japanese, Chinese, Korean, Arabic, Thai and more depending on the
+set chosen from `SceFontSet`; the default is a standard European face. It presents the same surface as
+`TrueTypeFont`.
+
+```csharp
+using var font = SystemFont.Open(SceFontSet.StdEuropeanW1G, pixelSize: 32);
+font.DrawText(surface, "Hello, world", 100, 200, Color.White);
+```
+
+Both `TrueTypeFont` and `SystemFont` derive from `ScalableFont` and can synthesize weight and slant for a
+face that ships without a bold or italic: `SetSlant(ratio)` leans the glyphs (a small positive ratio such
+as 0.2 gives a faux italic) and `SetWeight(x, y)` thickens them (a faux bold). Both apply to measuring and
+drawing alike.
+
+`TrueTypeFont`, `SystemFont` and `BitmapTextFont` — the built-in glyphs wrapped as a font,
+`new BitmapTextFont(scale)` — all implement `ITextFont` (`LineHeight`, `MeasureText`, `DrawText`), so
+`TextLayout` and the interface controls work the same whichever one you choose. `BitmapFont` itself is
+only the glyph table `BitmapTextFont` draws from.
 
 ## Screenshots and photo export
 
@@ -381,9 +411,11 @@ JpegEncoder.Save(surface, "/data/photo.jpg", quality: 90);   // quality 1..100
 ```
 
 Both also return the encoded bytes directly — `PngEncoder.Encode(surface)` and
-`JpegEncoder.Encode(surface)` — for sending over the network or storing elsewhere. This captures only
-what the application itself drew; to capture the finished screen together with the system overlays, see
-[Content and capture](content-capture.md).
+`JpegEncoder.Encode(surface)` — for sending over the network or storing elsewhere. The JPEG encoder
+takes a `JpegSampling`: `Ycc420` (the default, smallest), `Ycc422` (more chroma detail), or `Grayscale`
+(luminance only). On the way in, `JpegImage.Decode` applies the EXIF orientation tag, so a photo that
+records a rotation decodes upright. This captures only what the application itself drew; to capture the
+finished screen together with the system overlays, see [Content and capture](content-capture.md).
 
 ## Next
 

@@ -32,20 +32,20 @@ internal static unsafe class Program
     private static void PrintInfo(PayloadKernelIo io, ulong proc, int pid)
     {
         // Read ucred authid.
-        ulong ucred = io.ReadU64(proc + (ulong)KernelOffsets1001.ProcUcred);
-        ulong authId = io.ReadU64(ucred + (ulong)KernelOffsets1001.UcredSceAuthId);
+        ulong ucred = io.ReadU64(proc + (ulong)KernelOffsets.ProcUcred);
+        ulong authId = io.ReadU64(ucred + (ulong)KernelOffsets.UcredSceAuthId);
 
         // Read ucred caps (16 bytes = two u64s).
-        ulong caps0 = io.ReadU64(ucred + (ulong)KernelOffsets1001.UcredSceCaps);
-        ulong caps1 = io.ReadU64(ucred + (ulong)KernelOffsets1001.UcredSceCaps + 8);
+        ulong caps0 = io.ReadU64(ucred + (ulong)KernelOffsets.UcredSceCaps);
+        ulong caps1 = io.ReadU64(ucred + (ulong)KernelOffsets.UcredSceCaps + 8);
 
         // Read uid.
         int uid = (int)PayloadDebug.getuid();
         int euid = (int)PayloadDebug.geteuid();
 
         // Read jail vnode.
-        ulong filedesc = io.ReadU64(proc + (ulong)KernelOffsets1001.ProcFd);
-        ulong jdir = io.ReadU64(filedesc + (ulong)KernelOffsets1001.FdJdir);
+        ulong filedesc = io.ReadU64(proc + (ulong)KernelOffsets.ProcFd);
+        ulong jdir = io.ReadU64(filedesc + (ulong)KernelOffsets.FdJdir);
 
         // Output console info.
         fixed (byte* hdr = "Privileges\n----------\n\0"u8)

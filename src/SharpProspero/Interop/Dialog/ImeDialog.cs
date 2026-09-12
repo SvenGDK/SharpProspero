@@ -117,6 +117,27 @@ public enum ImeOption : uint
 
     /// <summary>Do not allow copy and paste.</summary>
     DisableCopyPaste = 0x00000080,
+
+    /// <summary>Force the specified languages to be available. Value 0x8.</summary>
+    LanguagesForced = 0x00000008,
+
+    /// <summary>Disable automatic resume. Value 0x100.</summary>
+    DisableResume = 0x00000100,
+
+    /// <summary>Disable auto-spacing when accepting a predictive suggestion. Value 0x200.</summary>
+    DisableAutoSpace = 0x00000200,
+
+    /// <summary>Disable position adjustment of the panel. Value 0x800.</summary>
+    DisablePositionAdjustment = 0x00000800,
+
+    /// <summary>Use the extended pre-edit text buffer. Value 0x1000.</summary>
+    ExpandedPreeditBuffer = 0x00001000,
+
+    /// <summary>Use the Japanese alphanumeric key as Caps Lock. Value 0x2000.</summary>
+    UseJapaneseEisuuKeyAsCapsLock = 0x00002000,
+
+    /// <summary>Use 4K coordinates for panel positioning. Value 0x4000.</summary>
+    UseOver2kCoordinates = 0x00004000,
 }
 
 /// <summary>
@@ -194,8 +215,14 @@ public static unsafe partial class ImeDialog
 {
     private const string Lib = "libSceImeDialog";
 
-    /// <summary>The service reported no active keyboard. Not fatal on its own; open again next frame.</summary>
-    public const int NotActive = unchecked((int)0x80BC0100);
+    /// <summary>The keyboard is not open, so there is nothing to update or close yet.</summary>
+    public const int NotRunning = unchecked((int)0x80BC0105);
+
+    /// <summary>The keyboard is still open; its result is not ready to read.</summary>
+    public const int NotFinished = unchecked((int)0x80BC0106);
+
+    /// <summary>The keyboard is not in use by this caller.</summary>
+    public const int NotInUse = unchecked((int)0x80BC0107);
 
     /// <summary>
     /// Zeroes <paramref name="param"/> and sets the user to the invalid default, matching the
