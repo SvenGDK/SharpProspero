@@ -1,0 +1,37 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+    <TargetFramework>net10.0</TargetFramework>
+    <LangVersion>14.0</LangVersion>
+    <Nullable>enable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <RootNamespace>ProsperoVibrate.Tests</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.8.1" />
+    <PackageReference Include="xunit" Version="2.9.3" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="3.1.5">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\..\src\SharpProspero\SharpProspero.csproj" />
+  </ItemGroup>
+
+  <!-- Consume the sample's pure logic files directly; the app csproj itself is an Exe that would clash
+       with a test host. -->
+  <ItemGroup>
+    <Compile Include="..\Patterns\VibrationPreset.cs" LinkBase="AppSource\Patterns" />
+    <Compile Include="..\Patterns\PresetCatalog.cs" LinkBase="AppSource\Patterns" />
+    <Compile Include="..\Patterns\PatternStorage.cs" LinkBase="AppSource\Patterns" />
+    <Compile Include="..\Patterns\AppSettings.cs" LinkBase="AppSource\Patterns" />
+    <Compile Include="..\HapticsController.cs" LinkBase="AppSource" />
+  </ItemGroup>
+
+</Project>

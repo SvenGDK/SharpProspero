@@ -56,7 +56,7 @@ internal static class Program
     private static readonly HashSet<string> KnownVerbs = new(StringComparer.Ordinal)
     {
         "prx", "stub", "crt", "compat", "nid", "elf", "self", "offsets", "retarget", "sysver", "link", "kmod", "diff", "gnf", "payload", "shader", "vag",
-        "modules", "param",
+        "modules", "param", "sceassets",
     };
 
     private static int Main(string[] args)
@@ -155,6 +155,11 @@ internal static class Program
 
         if (args.Length > 0 && string.Equals(args[0], "gnf", StringComparison.Ordinal))
             return RunGnf(args);
+
+        // Walks the sce_sys folder for a built module and writes the compressed texture form of each
+        // media image the system reader looks for, next to the source image.
+        if (args.Length > 0 && string.Equals(args[0], "sceassets", StringComparison.Ordinal))
+            return RunSceAssets(args);
 
         // Sends a built payload to a listening loader over the network.
         if (args.Length > 0 && string.Equals(args[0], "payload", StringComparison.Ordinal))
@@ -857,6 +862,91 @@ internal static class Program
         {
             Console.Error.WriteLine(ex.Message);
             return 2;
+        }
+    }
+
+    // Walks a folder for the media images the system reader carries a compressed texture form for and
+    // writes each one out as a DDS next to its source. Only icon*.png and pic*.png sources are picked;
+    // any other PNG in the folder is left as it is.
+    private static int RunSceAssets(string[] args)
+    {
+        string? folder = GetOption(args, "--folder");
+        bool force = HasFlag(args, "--force");
+
+        if (string.IsNullOrEmpty(folder))
+        {
+            Console.Error.WriteLine("Usage: sceassets --folder <sce_sys folder> [--force]");
+            Console.Error.WriteLine("  Writes a *.dds next to every icon*.png and pic*.png in the folder");
+            Console.Error.WriteLine("  (skipping any DDS the folder already carries unless --force is given).");
+            return 1;
+        }
+
+        if (!Directory.Exists(folder))
+        {
+            Console.Error.WriteLine($"Folder not found: {folder}");
+            return 1;
+        }
+
+        int emitted = 0;
+        int skipped = 0;
+        foreach (string source in EnumerateMediaSources(folder))
+        {
+            string outputName = Path.ChangeExtension(Path.GetFileName(source), ".dds");
+            string output = Path.Combine(Path.GetDirectoryName(source) ?? folder, outputName);
+            if (!force && File.Exists(output))
+            {
+                DateTime sourceTime = File.GetLastWriteTimeUtc(source);
+                DateTime outputTime = File.GetLastWriteTimeUtc(output);
+                if (outputTime >= sourceTime)
+                {
+                    skipped++;
+                    continue;
+                }
+            }
+
+            try
+            {
+                DecodedImage decoded = DecodedImage.Load(source);
+                byte[] dds = DdsEncoder.Encode(decoded);
+                File.WriteAllBytes(output, dds);
+                Console.WriteLine($"  {Path.GetFileName(source)} -> {Path.GetFileName(output)}"
+                    + $" ({decoded.Width}x{decoded.Height}, {dds.Length} bytes)");
+                emitted++;
+            }
+            catch (ImageFormatException ex)
+            {
+                Console.Error.WriteLine($"Cannot read image {source}: {ex.Message}");
+                return 2;
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                Console.Error.WriteLine(ex.Message);
+                return 2;
+            }
+        }
+
+        if (emitted == 0 && skipped == 0)
+            Console.WriteLine("  No icon*.png or pic*.png source images found in the folder.");
+        else
+            Console.WriteLine($"  Wrote {emitted} DDS file{(emitted == 1 ? "" : "s")}, kept {skipped} up-to-date.");
+        return 0;
+    }
+
+    // Every icon*.png and pic*.png in <paramref name="folder"/>, matched case-insensitively so a
+    // source named ICON0.PNG is picked as readily as icon0.png. The base name has to begin with the
+    // exact prefix and end in .png; nothing else in between is required.
+    private static IEnumerable<string> EnumerateMediaSources(string folder)
+    {
+        foreach (string path in Directory.EnumerateFiles(folder))
+        {
+            string name = Path.GetFileName(path);
+            if (!name.EndsWith(".png", StringComparison.OrdinalIgnoreCase))
+                continue;
+            if (name.StartsWith("icon", StringComparison.OrdinalIgnoreCase)
+                || name.StartsWith("pic", StringComparison.OrdinalIgnoreCase))
+            {
+                yield return path;
+            }
         }
     }
 

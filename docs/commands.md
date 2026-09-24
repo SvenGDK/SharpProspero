@@ -78,6 +78,7 @@ step.
 |---|---|---|
 | `gnf` | Turns a PNG, TGA or BMP into a texture the graphics processor samples; also reports one. | [Graphics on the GPU](graphics-gpu.md) |
 | `vag` | Converts a 16-bit PCM WAV to compact sound-effect audio, and back. | [Audio](audio.md) |
+| `sceassets` | Walks a `sce_sys` folder and writes a DX10-header BC7 `.dds` next to each `icon*.png` and `pic*.png`, so the launch panel and store art render from the DDS the loader accepts. Run automatically by `build-app.ps1`. | [Build pipeline](build-pipeline.md) |
 
 ## Bindings
 

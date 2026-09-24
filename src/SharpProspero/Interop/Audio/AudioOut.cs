@@ -76,6 +76,44 @@ public enum AudioOutStateOutput : ushort
     External = 1 << 7,
 }
 
+/// <summary>Which modules of the mastering chain are turned off.</summary>
+/// <remarks>
+/// Set the bits on the module bypass field inside a mastering-parameters struct before handing the
+/// struct to <see cref="AudioOut.sceAudioOutMasteringSetParam"/>. A cleared field runs every module.
+/// </remarks>
+[Flags]
+public enum AudioOutMasteringModuleBypass : uint
+{
+    /// <summary>Every module runs.</summary>
+    None = 0,
+
+    /// <summary>Skip the parametric equaliser.</summary>
+    ParamEq = 1u << 0,
+
+    /// <summary>Skip the multi-band compressor.</summary>
+    Compressor = 1u << 1,
+
+    /// <summary>Skip the master-volume module.</summary>
+    MasterVolume = 1u << 2,
+
+    /// <summary>Skip the peak limiter.</summary>
+    Limiter = 1u << 3,
+
+    /// <summary>Skip every module.</summary>
+    All = 0xFFFFFFFFu,
+}
+
+/// <summary>Extra behaviour for the mastering chain, passed to init and to <see cref="AudioOut.sceAudioOutMasteringSetParam"/>.</summary>
+[Flags]
+public enum AudioOutMasteringFlags : uint
+{
+    /// <summary>No extra behaviour.</summary>
+    None = 0,
+
+    /// <summary>Run the compressor before the equaliser instead of after it.</summary>
+    SwapEqCompressor = 1u << 0,
+}
+
 /// <summary>
 /// Where a port's samples are going and how loud, as a status call fills it in.
 /// </summary>
@@ -120,9 +158,53 @@ public unsafe struct SceAudioOutOutputParam
 }
 
 /// <summary>
+/// The output subsystem's overall state, as <see cref="AudioOut.sceAudioOutGetSystemState"/> fills it in.
+/// </summary>
+[StructLayout(LayoutKind.Sequential, Size = 32)]
+public unsafe struct SceAudioOutSystemState
+{
+    /// <summary>
+    /// The measured loudness of the whole output mix, in LKFS. Reads no lower than
+    /// <see cref="AudioOut.LoudnessMin"/> when the measurement has not yet settled or is disabled.
+    /// </summary>
+    public float Loudness;
+
+    private fixed byte _reserved8[4];
+    private fixed ulong _reserved64[3];
+}
+
+/// <summary>
+/// The four-byte header every mastering-parameters struct starts with. A caller fills a larger
+/// parameters struct (parametric-equaliser, compressor, master-volume, limiter, or the wrapper that
+/// carries all four), then hands its address to <see cref="AudioOut.sceAudioOutMasteringSetParam"/> as
+/// a pointer to this header.
+/// </summary>
+[StructLayout(LayoutKind.Sequential)]
+public struct SceAudioOutMasteringParamsHeader
+{
+    /// <summary>Which parameters struct follows the header. See <see cref="AudioOut.MasteringParamsIdDefault"/>.</summary>
+    public uint ParamsId;
+}
+
+/// <summary>
+/// The four-byte header every mastering-states struct starts with. A caller fills a larger states
+/// struct, then hands its address to <see cref="AudioOut.sceAudioOutMasteringGetState"/> as a pointer
+/// to this header; the call writes the running compressor and limiter meters back into it.
+/// </summary>
+[StructLayout(LayoutKind.Sequential)]
+public struct SceAudioOutMasteringStatesHeader
+{
+    /// <summary>Which states struct follows the header. See <see cref="AudioOut.MasteringStatesIdDefault"/>.</summary>
+    public uint StatesId;
+}
+
+/// <summary>
 /// Audio-output bindings. Initialize the subsystem, open a port for a user with a grain (samples per
 /// output block), a sample rate and a format, then push one block of samples at a time. Each output
 /// call blocks until the queue has room for the block, which paces the caller to the audio clock.
+/// The mastering group at the bottom of this class configures the finalizer chain (parametric
+/// equaliser, multi-band compressor, master volume, peak limiter) that shapes every port's output
+/// before it leaves the machine.
 /// </summary>
 /// <remarks>
 /// This library publishes no way to ask how much room the queue has left, so a caller cannot decide
@@ -148,6 +230,21 @@ public static unsafe partial class AudioOut
 
     /// <summary>Right-channel select bit for the volume call.</summary>
     public const int VolumeFlagRight = 1 << 1;
+
+    /// <summary>The 0 dB mix level for <see cref="sceAudioOutSetMixLevelPadSpk"/> (unattenuated).</summary>
+    public const int PadSpeakerMixLevel0Db = 0x8000;
+
+    /// <summary>The system's default pad-speaker mix level, -9 dB.</summary>
+    public const int PadSpeakerMixLevelDefault = 11626;
+
+    /// <summary>The floor a <see cref="SceAudioOutSystemState.Loudness"/> reading reaches while the measurement is idle, in LKFS.</summary>
+    public const float LoudnessMin = -70.0f;
+
+    /// <summary>The parameters-struct identifier that goes in <see cref="SceAudioOutMasteringParamsHeader.ParamsId"/> for the default wrapper.</summary>
+    public const uint MasteringParamsIdDefault = 1;
+
+    /// <summary>The states-struct identifier that goes in <see cref="SceAudioOutMasteringStatesHeader.StatesId"/> for the default wrapper.</summary>
+    public const uint MasteringStatesIdDefault = 1;
 
     /// <summary>Initializes the audio-output subsystem. Call once before opening a port.</summary>
     /// <returns>Zero on success, or a negative error code (including an already-initialized code).</returns>
@@ -195,4 +292,54 @@ public static unsafe partial class AudioOut
     /// <summary>Reads where a port's samples are going and how loud.</summary>
     [LibraryImport(Lib)]
     public static partial int sceAudioOutGetPortState(int handle, SceAudioOutPortState* state);
+
+    /// <summary>
+    /// Reads the output subsystem's overall state into <paramref name="state"/>. The one field a caller
+    /// reads is the measured loudness of the whole mix.
+    /// </summary>
+    [LibraryImport(Lib)]
+    public static partial int sceAudioOutGetSystemState(SceAudioOutSystemState* state);
+
+    /// <summary>
+    /// Sets how loud a controller-speaker port sounds when its samples are folded into a headset. The
+    /// level is on the same 0-32768 scale as <see cref="sceAudioOutSetVolume"/>, with
+    /// <see cref="PadSpeakerMixLevel0Db"/> for unattenuated and <see cref="PadSpeakerMixLevelDefault"/>
+    /// for the system's own -9 dB starting point.
+    /// </summary>
+    [LibraryImport(Lib)]
+    public static partial int sceAudioOutSetMixLevelPadSpk(int handle, int mixLevel);
+
+    /// <summary>
+    /// Initialises the mastering chain (parametric equaliser, multi-band compressor, master volume,
+    /// peak limiter) that finalises every port's output before it leaves the machine. Call once, before
+    /// setting parameters or reading meters, and pair with <see cref="sceAudioOutMasteringTerm"/> at
+    /// shutdown.
+    /// </summary>
+    /// <param name="flags">Extra behaviour, from <see cref="AudioOutMasteringFlags"/> (0 for the standard chain order).</param>
+    [LibraryImport(Lib)]
+    public static partial int sceAudioOutMasteringInit(uint flags);
+
+    /// <summary>
+    /// Applies a mastering-parameters struct. The caller fills a wrapper struct (whose first field is
+    /// <see cref="SceAudioOutMasteringParamsHeader"/>) with an equaliser, compressor, master-volume and
+    /// limiter block, then hands its address here as a pointer to the header.
+    /// </summary>
+    /// <param name="param">A pointer to a parameters struct that starts with a header.</param>
+    /// <param name="flags">Extra behaviour, from <see cref="AudioOutMasteringFlags"/> (0 for the standard chain order).</param>
+    [LibraryImport(Lib)]
+    public static partial int sceAudioOutMasteringSetParam(SceAudioOutMasteringParamsHeader* param, uint flags);
+
+    /// <summary>
+    /// Reads the mastering chain's running meters back into the caller's states struct. The caller fills
+    /// only the <see cref="SceAudioOutMasteringStatesHeader.StatesId"/> field of the header; the call
+    /// then writes the compressor input-RMS and gain-reduction, and the limiter input, output and gain
+    /// peaks into the rest of the struct.
+    /// </summary>
+    /// <param name="state">A pointer to a states struct that starts with a header.</param>
+    [LibraryImport(Lib)]
+    public static partial int sceAudioOutMasteringGetState(SceAudioOutMasteringStatesHeader* state);
+
+    /// <summary>Tears the mastering chain down. Balances a prior <see cref="sceAudioOutMasteringInit"/>.</summary>
+    [LibraryImport(Lib)]
+    public static partial int sceAudioOutMasteringTerm();
 }

@@ -7,12 +7,16 @@ using System.Runtime.InteropServices;
 namespace SharpProspero.Payload.IO;
 
 /// <summary>
-/// SFO file header. The magic bytes are <c>0x00505346</c> ("PSF\0" in little-endian).
+/// SFO file header. The magic bytes are <c>\0PSF</c> (read as little-endian <c>0x46535000</c>).
 /// </summary>
+/// <remarks>
+/// For a managed reader/writer that supports round-trip editing, see
+/// <see cref="Storage.Sfo.SfoFile"/>.
+/// </remarks>
 [StructLayout(LayoutKind.Sequential, Size = 20)]
 public struct SfoHeader
 {
-    /// <summary>Magic value: <c>0x00505346</c>.</summary>
+    /// <summary>Magic value: <c>0x46535000</c> (bytes <c>\0PSF</c> in little-endian).</summary>
     public uint Magic;
 
     /// <summary>Format version (typically <c>0x00000101</c>).</summary>
@@ -72,12 +76,13 @@ public static class SfoParamFormat
 /// The SFO format stores application metadata (title id, title name, application version, etc.)
 /// as a flat key-value table. The file begins with a 20-byte <see cref="SfoHeader"/>, followed by
 /// an array of 16-byte <see cref="SfoEntry"/> records, then the key string table and the data
-/// table.
+/// table. For a managed reader/writer that supports round-trip editing, see
+/// <see cref="Storage.Sfo.SfoFile"/>.
 /// </remarks>
 public readonly unsafe ref struct SfoReader
 {
-    /// <summary>SFO magic value.</summary>
-    public const uint Magic = 0x00505346;
+    /// <summary>SFO magic value: bytes <c>\0PSF</c> read as little-endian <see cref="uint"/>.</summary>
+    public const uint Magic = 0x46535000;
 
     private readonly byte* _data;
     private readonly int _length;

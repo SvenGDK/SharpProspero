@@ -137,4 +137,79 @@ public static unsafe partial class KernelMemory
     /// </summary>
     [LibraryImport(Lib)]
     public static partial int sceKernelVirtualQuery(void* address, int flags, void* info, nuint infoSize);
+
+    /// <summary>
+    /// Extended direct-memory allocator: like <see cref="sceKernelAllocateDirectMemory"/> but with a
+    /// caller-chosen <paramref name="flags"/> value for the reservation.
+    /// </summary>
+    [LibraryImport(Lib)]
+    public static partial int sceKernelAllocateDirectMemory2(
+        long searchStart, long searchEnd, nuint length, nuint alignment,
+        int memoryType, int flags, long* physicalAddressOut);
+
+    /// <summary>Reads the address and length of a PRT aperture window by <paramref name="index"/>.</summary>
+    [LibraryImport(Lib)]
+    public static partial int sceKernelGetPrtAperture(int index, void** address, nuint* length);
+
+    /// <summary>
+    /// Applies a run of mapping operations at once. Each entry names a range, its protection, its
+    /// memory type, and one of the <see cref="SceKernelMapEntryOperation"/> operations.
+    /// <paramref name="numberOfEntriesOut"/> receives how many entries had been consumed when the
+    /// call returned, so a caller can retry from the first unfinished one on failure.
+    /// </summary>
+    [LibraryImport(Lib)]
+    public static partial int sceKernelBatchMap(
+        SceKernelBatchMapEntry* entries, int numberOfEntries, int* numberOfEntriesOut);
+
+    /// <summary>
+    /// Applies a run of mapping operations at once with <paramref name="flags"/> chosen by the caller.
+    /// </summary>
+    [LibraryImport(Lib)]
+    public static partial int sceKernelBatchMap2(
+        SceKernelBatchMapEntry* entries, int numberOfEntries, int* numberOfEntriesOut, int flags);
+}
+
+/// <summary>One entry of a batched mapping call: the address range, the protection, the memory type,
+/// and one of the <see cref="SceKernelMapEntryOperation"/> operations to apply.</summary>
+[StructLayout(LayoutKind.Sequential, Size = 32)]
+public unsafe struct SceKernelBatchMapEntry
+{
+    /// <summary>The first address of the range.</summary>
+    public void* Start;
+
+    /// <summary>The physical offset the range is backed from, for a mapping operation.</summary>
+    public long Offset;
+
+    /// <summary>The byte count of the range.</summary>
+    public nuint Length;
+
+    /// <summary>The protection bits, low byte of the <c>Prot*</c> flags on <see cref="KernelMemory"/>.</summary>
+    public byte Protection;
+
+    /// <summary>The memory type, low byte of the <c>MemoryType*</c> values on <see cref="KernelMemory"/>.</summary>
+    public byte Type;
+
+    private short _pad1;
+
+    /// <summary>One of the <see cref="SceKernelMapEntryOperation"/> values.</summary>
+    public int Operation;
+}
+
+/// <summary>Which operation one <see cref="SceKernelBatchMapEntry"/> asks for.</summary>
+public enum SceKernelMapEntryOperation
+{
+    /// <summary>Map the range from a direct-memory reservation.</summary>
+    MapDirect = 0,
+
+    /// <summary>Unmap the range, whatever backed it.</summary>
+    Unmap = 1,
+
+    /// <summary>Change the range's protection.</summary>
+    Protect = 2,
+
+    /// <summary>Map the range from flexible memory.</summary>
+    MapFlexible = 3,
+
+    /// <summary>Change both the range's memory type and its protection.</summary>
+    TypeProtect = 4,
 }

@@ -18,6 +18,13 @@ public static unsafe class KernelPaging
     /// <summary>Large page size (2 MB).</summary>
     public const ulong LargePageSize = 0x200000;
 
+    /// <summary>Upper bound on physical addresses the on-device DMAP maps. The DMAP is
+    /// a linear image of physical RAM, so a translation that resolves to an address
+    /// beyond this bound points at MMIO or off-map space and cannot be dereferenced
+    /// through the DMAP. Callers use this to reject bogus translations that would
+    /// otherwise page-fault in the pipe primitive.</summary>
+    public const ulong DmemMaxPhys = 0x1_0000_0000_0000UL;
+
     /// <summary>
     /// Translates a kernel virtual address to a physical address by walking the page
     /// tables. Returns <c>ulong.MaxValue</c> if the mapping is not present.
@@ -27,13 +34,6 @@ public static unsafe class KernelPaging
     /// <param name="dmapBase">The direct physical memory map base
     /// (<c>DMAP_BASE</c>, typically <c>0xFFFF800000000000</c>).</param>
     /// <param name="va">The virtual address to translate.</param>
-    /// <summary>Upper bound on physical addresses the on-device DMAP maps. The DMAP is
-    /// a linear image of physical RAM, so a translation that resolves to an address
-    /// beyond this bound points at MMIO or off-map space and cannot be dereferenced
-    /// through the DMAP. Callers use this to reject bogus translations that would
-    /// otherwise page-fault in the pipe primitive.</summary>
-    public const ulong DmemMaxPhys = 0x1_0000_0000_0000UL;
-
     public static ulong VirtToPhys(PayloadKernelIo io, ulong cr3, ulong dmapBase, ulong va)
     {
         ulong pml4i = (va >> 39) & 0x1FF;

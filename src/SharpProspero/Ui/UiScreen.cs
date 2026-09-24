@@ -60,6 +60,23 @@ public sealed class UiScreen
     public Action? Cancelled { get; set; }
 
     /// <summary>
+    /// Sets <paramref name="candidate"/> as the focus a following <see cref="Layout"/> call will
+    /// try to hold onto. When the candidate is not in the next layout's focusable set, Layout
+    /// falls back to the first focusable as usual; when it is, focus stays put.
+    /// </summary>
+    /// <remarks>
+    /// Used across a rebuild of the same page: the caller re-creates the control tree, remembers
+    /// the previously focused element (a field on the caller, so the reference identity survives
+    /// the tree rebuild), and hands it back through this method so the arrow-key navigation the
+    /// user was drawing on the old tree keeps working on the new one.
+    /// </remarks>
+    public void RestoreFocus(UiElement candidate)
+    {
+        ArgumentNullException.ThrowIfNull(candidate);
+        Focused = candidate;
+    }
+
+    /// <summary>
     /// Places the control tree within <paramref name="area"/> and refreshes the set of focusable
     /// controls. Call this before <see cref="Update"/> whenever the tree or the area may have changed;
     /// it is cheap enough to call every frame.

@@ -21,7 +21,7 @@ The Agc layer drives the graphics processor directly: you describe shader resour
 
 ## The two layers
 
-The GPU is exposed as two layers. The lower one is the complete command interface: `SceAgc` holds the command builders (draws, dispatches, register writes, synchronization, shader create and link) and `SceAgcDriver` holds the driver calls (submit, queue, flip, wait). Every builder takes the command buffer first and returns the address of the packet it wrote.
+The GPU is exposed as two layers. The lower one is the complete command interface: `SceAgc` holds the command builders (draws, dispatches, register writes, synchronization, shader create and link) and `SceAgcDriver` holds the driver calls (submit, queue, flip, wait). Every builder takes the command buffer first and returns the address of the packet it wrote. Both classes carry the full function surface the platform publishes: every builder has its paired `GetSize` call so a caller can reserve room before recording, and every driver call the module exposes is available for a renderer that needs a submission point the higher layer does not wrap.
 
 The higher layer wraps that for everyday use:
 
@@ -49,6 +49,26 @@ AgcDevice.Submit(dcb);
 AgcDevice.SuspendPoint();
 display.AdvanceFrame();
 ```
+
+## Display bindings
+
+The display service beneath `DisplayDevice` is fully available for a renderer that opens the output and registers buffers itself. `SharpProspero.Interop.VideoOut.VideoOut` publishes the full surface: `sceVideoOutOpen`, `sceVideoOutSetBufferAttribute2`, `sceVideoOutRegisterBuffers2`, `sceVideoOutUnregisterBuffers`, `sceVideoOutSubmitFlip`, `sceVideoOutWaitVblank`, `sceVideoOutIsFlipPending`, `sceVideoOutGetFlipStatus`, `sceVideoOutGetVblankStatus`, the flip / vblank / pre-vblank event registration and removal, the output-mode configure and query pair, `sceVideoOutGetOutputStatus`, the master / slave flip tie, `sceVideoOutSubmitChangeBufferAttribute2`, the buffer-attribute option add / remove, alpha and blend-space control, and the sized colour and colour-space-conversion helpers (`AdjustColor`, `AdjustColorSpaceConversion` and their setters, which pass the caller-owned block size for you).
+
+`SharpProspero.Interop.VideoOut.VideoOutTypes` carries the values every one of those calls takes. `VideoOutLimits` names the register-count, buffer-count, flip-rate and buffer-index sentinels, plus the version constants the primary and flat-panel-display parameter blocks require. The enumerated tokens cover event ids (`VideoOutEventId.Flip`, `Vblank`, `PreVblankStart`), output resolution and dynamic range (`VideoOutOutputResolution`, `VideoOutOutputDynamicRange`), status flags (`VideoOutOutputStatusFlags`, `VideoOutVblankStatusFlags`), global-alpha and blend-space modes (`VideoOutGlobalAlphaMode`, `VideoOutGlobalBlendSpace`), refresh rates (`VideoOutRefreshRate`) and DCC-control ratios (`VideoOutDccControl`).
+
+The pixel-format catalogue is `VideoOutPixelFormat`:
+
+| Format | Layout | Transfer |
+|---|---|---|
+| `Rgba8Srgb` | 32-bit RGBA | sRGB |
+| `Bgra8Srgb` | 32-bit BGRA | sRGB (the CPU-renderer default) |
+| `Rgb10A2` / `Bgr10A2` | 10:10:10:2 | Linear |
+| `Rgb10A2Srgb` / `Bgr10A2Srgb` | 10:10:10:2 | sRGB |
+| `Rgb10A2Bt2100Pq` / `Bgr10A2Bt2100Pq` | 10:10:10:2 | BT.2100 PQ (HDR) |
+| `Rgba16Float` / `Bgra16Float` | 16-bit-per-channel float | Linear |
+| `Rgba16FloatForBt2100Pq` / `Bgra16FloatForBt2100Pq` | 16-bit-per-channel float | BT.2100 PQ working space |
+
+`VideoOutBufferAttributeOption` covers the option bits: `None`, `StrictColorimetry` (bit 3), and the alpha-premultiplied trio (`AlphaNonPremultiplied` and `AlphaPremultiplied` on bit 5, plus `AlphaPremultipliedMask`), with a `Mask` that covers every exposed option. `VideoOutOutputMode` gives the mode tokens `Unknown`, `Default`, and `Mode119_88Hz` that `sceVideoOutConfigureOutput` accepts. `SceVideoOutParamPrimary` (88 bytes) and `SceVideoOutParamFpd` (32 bytes) are the parameter blocks a caller passes to `sceVideoOutOpen` when it wants to set the display service thread's priority and CPU affinity for that handle; the primary block's version is `VideoOutLimits.ParamPrimaryVersion` and the flat-panel-display block's is `VideoOutLimits.ParamFpdVersion`.
 
 ## Register blocks
 
@@ -243,6 +263,50 @@ using var mem = DirectMemoryRegion.Allocate((nuint)layout.TotalSizeBytes, layout
 
 `AgcTileMode.RenderTarget` is the tiling the display accepts and the one to give a color target; `AgcTileMode.Depth` is the depth-target tiling; `AgcTileMode.Linear` is plain row-major storage. Direct memory is the only source of GPU-visible buffers - see [Memory](memory.md). For a linear surface where you want just the padded row pitch and size, `LinearSurface.Compute` is the simpler arithmetic-only helper.
 
+## Cache write-back
+
+Direct memory is cached. Every CPU store to a direct-memory buffer lands in an L1 line and only reaches DRAM when the line is evicted or explicitly written back, and the scan-out engine and the video decoder read DRAM through the memory controller rather than through the CPU coherency domain. A CPU renderer that hands a scan-out buffer to `sceVideoOutSubmitFlip` without a write-back shows the display a mixture of the previous frame and only the lines that natural eviction happened to retire, which reads as granular noise concentrated in the region the CPU wrote last. The same rule applies to any buffer a device outside the CPU coherency domain will read next.
+
+`SharpProspero.Memory.CpuCache` is the primitive callers use between the last store and the point of hand-off:
+
+```csharp
+public static class CpuCache
+{
+    public static void WriteBack(void* address, nuint length);
+}
+```
+
+`WriteBack` walks the range one 64-byte cache line at a time, issuing `CLFLUSHOPT` for each line, then a single `SFENCE` to order the (weakly-ordered) write-backs ahead of any subsequent store or call. The call is a handful of x86 instructions with no kernel transition, so it takes no garbage-collection safepoint. The base pointer must be 64-byte aligned; direct memory allocated through `DirectMemoryRegion.Allocate` is 2 MiB aligned and satisfies that trivially. Passing a `length` of zero is legal — the `SFENCE` still runs, so the call may also serve as a plain store-ordering fence.
+
+```csharp
+// Draw straight into a scan-out buffer, then hand it to the display.
+CpuCache.WriteBack(display.BackBufferAddress, scanoutBytes);
+int rc = VideoOut.sceVideoOutSubmitFlip(display.OutputHandle, index, (uint)VideoOutFlipMode.VSync, frameIndex);
+```
+
+`DisplayDevice.Present` runs this call on the current back buffer for the frame's tiled footprint before it submits the flip, so the CPU `Surface` path in [Graphics](graphics.md) needs none of this. A caller that records its own flip on the graphics timeline with `DisplayDevice.AdvanceFrame` — or that submits directly through `sceVideoOutSubmitFlip` — is responsible for the write-back itself when the buffer was touched from the CPU. A frame drawn entirely on the graphics processor needs no CPU-side write-back: the end-of-pipe cache invalidate emitted on the pipe handles it.
+
+The entry point is served by `libSharpProsperoCompat`, a compat object bound into every application module through the build's `DirectPInvoke` list. A missing symbol fails the link and never becomes a silent runtime no-op.
+
+## Async memory paging (Ampr)
+
+The console publishes a second command-buffer path for GPU-driven memory management — mapping, unmapping and remapping direct and flexible memory, including partial-resident textures, together with a paired file-read submission subsystem. Its callable entry points reach applications only through a C++ interface with no C prototype, so `SharpProspero.Interop.Agc.SceAmpr` carries the constants and command-buffer layouts that surface is defined in terms of without binding any function.
+
+The command buffer itself is `SceAmprCommandBuffer`: `Type` selects which command builder interprets the bytes, `Buffer` and `BufferSize` name the memory the builders append into, `Offset` is the append cursor, and `NumCommands` is the volatile count the runtime writes back after every successful append. The submission returns its result through one of `SceAmmResultBuffer` (async memory management) or `SceAprResultBuffer` (async paging read): `Result` is zero on success or a negative error code, and `ErrorOffset` is the byte inside the command buffer at which the failure was seen. `SceAprMapState` and `SceAprScatterGatherState` are the opaque 64-bit fields the paging path keeps inside its own buffers.
+
+The constants cover:
+
+| Category | Members |
+|---|---|
+| Wait comparisons | `WaitCompareEqual`, `WaitCompareGreaterThan`, `WaitCompareLessThan`, `WaitCompareNotEqual` |
+| Wait completion | `WaitCommandFetchFlushDisable`, `WaitCommandFetchFlushEnable` |
+| APR priority | `AprPriority0` through `AprPriority6` (0 highest, 6 lowest) |
+| Buffer limits | `CommandBufferSizeMax` and `AprBufferMax` (64 MiB each), `AprResolveMax` (1024) |
+| APR sentinels | `AprFileIdInvalid` (0xFFFFFFFF) |
+| Error codes | The full `ErrorApr*` family (0x81912001..0x8191203E) plus the paired `Error*` names common to both surfaces |
+
+A renderer that drives this surface through its own C++ interop layer builds the command buffer in place and reads back the shared `Result` value with the codes above; the constants match the values the module accepts and returns, and the layouts have the exact field order, size and alignment the module reads.
+
 ## Pixel tiling
 
 The GPU does not read pixels in row-major order; it reads them swizzled into blocks. `AgcTiler` moves pixel bytes between plain linear order and that hardware-tiled order - to upload a texture you built in memory, or to read a rendered surface back into a linear image. `LinearSizeBytes` sizes the linear side, and `Tile` / `Detile` convert one mip level of one slice:
@@ -340,8 +404,71 @@ dotnet run --project tools/SharpProspero.Bindings.Generator -- shader --file mes
 Add `--registers` to list every context and shader register the program sets. This inspects a shader; it
 does not compile or disassemble one.
 
+## Compressed video decoding
+
+The console publishes three compressed-video surfaces below the media wrappers in [Media](media.md), each one a candidate for a renderer that runs its own decode loop, feeds decoded pictures into a compute pipeline, or reads back per-picture metadata the wrapper does not expose. All three live under `SharpProspero.Interop.Video` and `SharpProspero.Interop.Media`, take memory the caller has allocated, and run their decode work on a compute queue the caller creates.
+
+### The two decoders
+
+`SharpProspero.Interop.Video.Videodec2` is the console's hardware-accelerated decoder for AVC, HEVC and VP9. The caller asks `sceVideodec2QueryComputeMemoryInfo` and `sceVideodec2QueryDecoderMemoryInfo` how much memory a compute queue and a decoder will take, allocates every region itself (`SceVideodec2ComputeMemoryInfo` and `SceVideodec2DecoderMemoryInfo` say how much of each of CPU, GPU and shared memory, at what alignment), creates the queue with `sceVideodec2AllocateComputeQueue` and the decoder with `sceVideodec2CreateDecoder`, then loops `sceVideodec2Decode` with one `SceVideodec2InputData` and one `SceVideodec2FrameBuffer` per call. `sceVideodec2Flush` pushes out anything the decoder still holds; `sceVideodec2Reset` drops what it carried after a seek.
+
+`SharpProspero.Interop.Video.Vdecsw` is the software (compute-shader) decoder for the same three codecs. It follows the same pattern with a matching set of names — `sceVdecswQueryComputeMemoryInfo`, `sceVdecswQueryDecoderMemoryInfo`, `sceVdecswAllocateComputeQueue`, `sceVdecswCreateDecoder` — and splits decode into a queued input side and a separate output side: `sceVdecswSetDecodeInput` hands one access unit in, `sceVdecswSyncDecodeInput` (or `sceVdecswTrySyncDecodeInput` for a non-blocking check) reports how many pictures came out of it, `sceVdecswSetDecodeOutput` offers a picture buffer, and `sceVdecswSyncDecodeOutput` / `sceVdecswTrySyncDecodeOutput` return a decoded picture in `SceVdecswOutputInfo`. `sceVdecswFinalizeDecodeSequence` closes out a sequence and flushes whatever the decoder still held, and `sceVdecswResetDecoder` drops it. The extra codec-specific configuration goes through `SceVdecswHevcExtraConfigInfo` and `SceVdecswVp9ExtraConfigInfo`, addressed by the `ExtraConfigInfo` field of the decoder configuration.
+
+Both decoders take `MaxFrameWidth`, `MaxFrameHeight`, `MaxDpbFrameCount` and `MaxLevel` in the configuration and answer the query call with the largest per-picture buffer they will ever ask for, and with the alignment the caller must respect for it — `Videodec2.MemoryAlignment` (equal to `KernelMemory.PageSize`, 16 KiB) and the `FrameBufferAlignment` field on each decoder's memory-info structure. A decoder built for the largest picture it needs then holds a fixed memory footprint. Passing `-1` where an integer size is asked for lets the decoder decide (`Vdecsw.AutoFrameSetting` and `Videodec2.AutoFrameSetting`), and passing `0` for the affinity mask or `-1` for the thread priority inherits the caller's (`Vdecsw.InheritAffinityMask`, `Vdecsw.InheritThreadPriority` and the same names on `Videodec2`).
+
+### Per-picture information
+
+Both decoders publish the same per-picture information the source bitstreams carry, so a renderer that needs the timing, aspect, colour and cropping fields does not have to parse the SPS or VUI itself. The three getters take an `SceVdecsw*OutputInfo` / `SceVideodec2*OutputInfo` produced by the last decode call and fill a codec-appropriate structure:
+
+| Codec | Videodec2 getter | Vdecsw getter | Structure filled |
+|---|---|---|---|
+| H.264 (AVC) | `sceVideodec2GetAvcPictureInfo` | `sceVdecswGetAvcPictureInfo` | `SceVideodec2AvcPictureInfo` / `SceVdecswAvcPictureInfo` (up to two entries — one per field for an interlaced picture) |
+| HEVC | `sceVideodec2GetHevcPictureInfo` | `sceVdecswGetHevcPictureInfo` | `SceVideodec2HevcPictureInfo` / `SceVdecswHevcPictureInfo` (one entry) |
+| VP9 | `sceVideodec2GetVp9PictureInfo` | `sceVdecswGetVp9PictureInfo` | `SceVideodec2Vp9PictureInfo` / `SceVdecswVp9PictureInfo` (one entry) |
+
+The generic `sceVideodec2GetPictureInfo` and `sceVdecswGetPictureInfo` fill the codec-appropriate shape through two `void*` out-pointers, for a caller that switches on `CodecType` at run time.
+
+Each picture-info structure begins with a `ThisSize` the caller sets to `sizeof(...)` so the decoder accepts future extensions, then carries `IsValid`, the presentation and decode times, the caller's `AttachedData` value from the input, followed by every SPS / VUI / SEI field the stream signalled — the picture width and height, cropping and conformance windows, aspect ratio, video and colour signal identifiers, timing information, DPB size, and codec-specific flags such as `IdrPictureFlag`, `IrapPictureFlag` and the constraint-set bits. The AVC structure carries the H.264 field pair; the HEVC structure adds the profile, tier and level triple and the sub-layer information; the VP9 structure adds the coded / render resolution pair, bit depth and colour space.
+
+The structure layouts match what the module writes — padding is placed so `FrameCropLeftOffset`, `FrameCropRightOffset`, `FrameCropTopOffset` and `FrameCropBottomOffset` sit at the offsets the decoder reads them from, and the VUI fields land where the decoder puts them.
+
+### Full media playback
+
+`SharpProspero.Interop.Media.AvPlayer` is the flat binding for the console's full playback library: MP4, WebM and HLS sources, video and audio and timed-text streams, all decoded on the library's own threads with allocators the caller supplies. The higher-level `MediaPlayer` in [Media](media.md) wraps it for common cases; a renderer that needs the library's advanced controls calls it directly.
+
+The base surface starts and stops the player:
+
+| Binding | What it does |
+|---|---|
+| `sceAvPlayerInit` | Starts a player from an `AvPlayerInitData` block; every allocation the player makes goes through the caller-supplied `AvPlayerMemAllocator` in the block. Returns the player handle. |
+| `sceAvPlayerAddSource` | Adds a plain file path as the source. |
+| `sceAvPlayerStart`, `sceAvPlayerStop`, `sceAvPlayerPause`, `sceAvPlayerResume` | Playback control. |
+| `sceAvPlayerIsActive` | Whether the player still has something to play. |
+| `sceAvPlayerSetLooping`, `sceAvPlayerJumpToTime`, `sceAvPlayerCurrentTime` | Seeking and looping. |
+| `sceAvPlayerStreamCount`, `sceAvPlayerGetStreamInfo`, `sceAvPlayerEnableStream` | Enumerate and enable individual streams. |
+| `sceAvPlayerGetAudioData`, `sceAvPlayerGetVideoDataEx` | Pull one decoded audio frame or one NV12 video frame with the pitch and crop fields filled. |
+| `sceAvPlayerClose` | Shut the player down. |
+
+The extended surface adds thread-parameter, decoder-init and HLS control:
+
+| Binding | What it does |
+|---|---|
+| `sceAvPlayerInitEx` | Starts a player with `AvPlayerInitDataEx` — per-thread priority, stack size and affinity for the audio decoder, video decoder, demuxer, event, call-queue, HTTP command-processor, HTTP segment-manager, HTTP stream-list and file-streaming threads. |
+| `sceAvPlayerPostInit` | Applies the advanced parameters in `AvPlayerPostInitData`: the demux video buffer size and the per-codec initialization for video (`AvPlayerVideoSoftware2Params`: CPU affinity, thread priority, decode-queue depth, compute pipe and queue ids) and audio (`AvPlayerAudioDecoderParams`: the AAC 7- and 7.1-channel ordering), plus the HTTP and SSL context ids for an HLS source. |
+| `sceAvPlayerAddSourceEx` | Adds a source described by `AvPlayerSourceDetails` (URI plus explicit `AvPlayerSourceType`: `FileMp4`, `FileWebm`, `Hls`, or `Unknown` to infer from the extension). |
+| `sceAvPlayerGetStreamInfoEx` | Describes a stream in `AvPlayerStreamInfoEx`, whose 80-byte details union carries crop insets, pitch, per-plane bit depths, framerate, and the colour-primaries and transfer-characteristics identifiers alongside the width, height, aspect and language code. |
+| `sceAvPlayerChangeStream`, `sceAvPlayerDisableStream` | Swap the active audio stream mid-playback (seamless) or turn a stream off. |
+| `sceAvPlayerStartEx` | Starts playback from a position given in `AvPlayerStartInfoEx.StartTimeMilliseconds`. |
+| `sceAvPlayerSetTrickSpeed` | Sets the trick-play speed in hundredths of normal — 100 is normal, 400 to 3200 fast-forwards, -400 to -3200 rewinds; anything smaller than the 4x threshold is refused. |
+| `sceAvPlayerSetAvSyncMode` | Chooses `AvPlayerAvSyncMode.Default` (audio drives the clock; video frames arrive at that clock) or `.None` (frames arrive as soon as they decode and the caller decides when to draw them). Call before `sceAvPlayerStart`. |
+| `sceAvPlayerSetAvailableBandwidth` | Sets the start / minimum / maximum HLS bandwidths in bits per second the session picks quality levels within; zero drops a bound. Call before adding the source. |
+| `sceAvPlayerSetLogCallback`, `sceAvPlayerVprintf` | Registers a callback for each log line and writes a message through the log channel with a caller-built argument list. The player also publishes a variadic entry point, which needs the caller to set the vector-register count in AL; a fixed-shape declaration cannot do that correctly, so only the list-taking form is bound. |
+
+`AvPlayer.InitializeData` zeroes an `AvPlayerInitData` block so only the fields a caller sets are non-zero, and `AvPlayer.DefaultBasePriority` (700) is the thread priority the player takes when none is given. The colour signalling that `AvPlayerVideoDetailsEx` and the picture-info structures use is spelled out by `AvPlayerColourPrimaries` and `AvPlayerTransferCharacteristics` — the full BT.709 / BT.601 / BT.2020 / BT.2100 catalogue plus PQ and HLG — so a renderer can pick the right pipeline path from the stream itself.
+
 ## Related pages
 
 - [2D scenes](graphics-scene.md) - cameras, tile maps, and particles on the CPU surface.
 - [Graphics](graphics.md) - the CPU `Surface` most applications draw with.
 - [Memory](memory.md) - `DirectMemoryRegion`, the source of every GPU-visible buffer.
+- [Media](media.md) - the higher-level playback and decoder wrappers built on the video bindings above.

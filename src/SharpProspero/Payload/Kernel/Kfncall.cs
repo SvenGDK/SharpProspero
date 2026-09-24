@@ -1,6 +1,7 @@
 // SharpProspero - a C# SDK for on-device application modules.
 // Copyright (C) 2026 SvenGDK
 
+using System;
 using System.Runtime.InteropServices;
 
 namespace SharpProspero.Payload.Kernel;
@@ -32,12 +33,12 @@ public static unsafe partial class PayloadKfncall
 
     // ---- State ----
     private static bool s_setupDone;
-    private static byte[] s_idt1Gate;
-    private static byte[] s_origIdt1Gate;
-    private static byte[] s_idt9Gate;
-    private static byte[] s_origIdt9Gate;
-    private static byte[] s_idt179Gate;
-    private static byte[] s_origIdt179Gate;
+    private static byte[] s_idt1Gate = Array.Empty<byte>();
+    private static byte[] s_origIdt1Gate = Array.Empty<byte>();
+    private static byte[] s_idt9Gate = Array.Empty<byte>();
+    private static byte[] s_origIdt9Gate = Array.Empty<byte>();
+    private static byte[] s_idt179Gate = Array.Empty<byte>();
+    private static byte[] s_origIdt179Gate = Array.Empty<byte>();
     private static ulong s_idtBase;
     private static int s_pinnedCpu;
     private static ulong s_gadgetStack;

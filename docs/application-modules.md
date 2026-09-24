@@ -32,7 +32,7 @@ The pages under this section cover the API surface an application module builds 
 | [Input](input.md) | The controller, motion and touch, rumble and light bar, keyboard, and mouse. |
 | [Audio](audio.md) | Output and microphone, decoding, encoding, filters, envelopes, synthesis, and mixing. |
 | [Media](media.md) | Playing a media file, reading a track's tags, and decoding video. |
-| [Networking](networking.md) | TCP and UDP sockets, a poller, an HTTP client and server, and downloads. |
+| [Networking](networking.md) | TCP and UDP sockets, a poller, an HTTP client and server, and downloads; the low-level [network bindings](net.md) for HTTP/2, softAP hosting, IPv6, and DNS. |
 | [Memory](memory.md) | Direct and flexible memory, the managed heap, pooling, and an asset cache. |
 | [Interface toolkit](ui.md) | Building screens from labels, buttons, lists, and other controls. |
 | [Data and utilities](data.md) | [Files](storage.md), [numerics](numerics.md), [buffers](buffers.md), [text](text.md), [XML](xml.md), [compression](compression.md), and [hashing](hashing.md). |

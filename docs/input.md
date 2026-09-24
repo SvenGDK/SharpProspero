@@ -139,6 +139,45 @@ gamePad.StopVibration();                                  // both motors off
 The large motor is the low-frequency left motor and the small motor the high-frequency right one.
 Disposing the pad stops both motors for you.
 
+For anything richer than one pair of levels, `GamePad.Vibration` sits on top of the same call. It runs a
+frame-driven animator (like `LightBar` does for color) that supports a solid pair, a pulse between a low
+and a high fraction, a blink between two pairs, a ramp from one pair to another, and a queue of timed
+steps. Call the shape you want once, then `Update` once per frame; the pair is written to the controller
+only on the frames it changed.
+
+```csharp
+using SharpProspero.Input;
+
+Vibration v = gamePad.Vibration;
+
+// A steady pair:
+v.SetLevels(200, 100);
+
+// Breathe the large motor with an amplitude envelope:
+v.Pulse(new VibrationLevels(220, 0), periodSeconds: 1.5f);
+
+// Run a sequence of timed steps:
+v.Sequence([
+    VibrationStep.Hold(new VibrationLevels(200, 100), 0.15f),
+    VibrationStep.Rest(0.10f),
+    VibrationStep.FadeTo(new VibrationLevels(0, 240), 0.30f),
+]);
+
+// each frame:
+v.Update((float)context.DeltaSeconds);
+
+// Stop the motors and end any animation:
+v.Stop();
+```
+
+`VibrationLevels` is the (large, small) pair with `Scaled` and `Lerp` helpers; `VibrationStep.Hold`,
+`VibrationStep.FadeTo` and `VibrationStep.Rest` build one entry of a sequence. `SetDriveMode` picks
+between the full range of the current controller generation and the earlier reduced range. When a
+state is already running, `SetDriveMode` re-sends the current pair after the mode changes and
+invalidates the change-detector, so the new mode reaches the motors on the same frame instead of
+waiting for the next level change. `Vibration.WeakenWhileMicrophoneInUse` weakens motors and trigger
+effects across every controller while the built-in microphone is in use.
+
 ### Several controllers at once
 
 A controller belongs to a signed-in user, and the service routes each user's samples to the handle opened

@@ -136,6 +136,59 @@ public unsafe struct WebBrowserDialogResult
 }
 
 /// <summary>
+/// The allow-list a caller passes with
+/// <see cref="WebBrowserDialog.sceWebBrowserDialogOpenForPredeterminedContent"/>. Each entry in
+/// <see cref="Domain"/> is a null-terminated address the browser is allowed to reach; unused entries
+/// stay null. Fill the block through
+/// <see cref="WebBrowserDialog.InitializePredeterminedContentParam"/> so the size is set.
+/// </summary>
+[StructLayout(LayoutKind.Sequential, Size = 424)]
+public unsafe struct WebBrowserDialogPredeterminedContentParam
+{
+    /// <summary>The size of this block, in bytes.</summary>
+    public ulong Size;
+
+    /// <summary>The 20 allow-list entries, each a null-terminated address or null.</summary>
+    public fixed ulong Domain[20];
+
+    private fixed byte _reserved[256];
+}
+
+/// <summary>
+/// The block the cookie-reset call takes. Fill it through
+/// <see cref="WebBrowserDialog.InitializeResetCookieParam"/> so the size is set.
+/// </summary>
+[StructLayout(LayoutKind.Sequential, Size = 264)]
+public unsafe struct WebBrowserDialogResetCookieParam
+{
+    /// <summary>The size of this block, in bytes.</summary>
+    public ulong Size;
+
+    private fixed byte _reserved[256];
+}
+
+/// <summary>
+/// The block the cookie-set call takes. Fill it through
+/// <see cref="WebBrowserDialog.InitializeSetCookieParam"/> so the size is set, then point
+/// <see cref="Url"/> at the address the cookie belongs to and <see cref="Cookie"/> at the cookie
+/// string.
+/// </summary>
+[StructLayout(LayoutKind.Sequential, Size = 280)]
+public unsafe struct WebBrowserDialogSetCookieParam
+{
+    /// <summary>The size of this block, in bytes.</summary>
+    public ulong Size;
+
+    /// <summary>A null-terminated address the cookie is being set for.</summary>
+    public byte* Url;
+
+    /// <summary>A null-terminated cookie string.</summary>
+    public byte* Cookie;
+
+    private fixed byte _reserved[256];
+}
+
+/// <summary>
 /// Browser-dialog bindings. Initialize the subsystem, open a dialog for an address, poll the status
 /// each frame until it finishes, read the result, then close and terminate.
 /// </summary>
@@ -159,6 +212,27 @@ public static unsafe partial class WebBrowserDialog
         param->Size = (ulong)sizeof(WebBrowserDialogParam);
     }
 
+    /// <summary>Zeroes <paramref name="param"/> and fills in its size field.</summary>
+    public static void InitializePredeterminedContentParam(WebBrowserDialogPredeterminedContentParam* param)
+    {
+        new System.Span<byte>(param, sizeof(WebBrowserDialogPredeterminedContentParam)).Clear();
+        param->Size = (ulong)sizeof(WebBrowserDialogPredeterminedContentParam);
+    }
+
+    /// <summary>Zeroes <paramref name="param"/> and fills in its size field.</summary>
+    public static void InitializeResetCookieParam(WebBrowserDialogResetCookieParam* param)
+    {
+        new System.Span<byte>(param, sizeof(WebBrowserDialogResetCookieParam)).Clear();
+        param->Size = (ulong)sizeof(WebBrowserDialogResetCookieParam);
+    }
+
+    /// <summary>Zeroes <paramref name="param"/> and fills in its size field.</summary>
+    public static void InitializeSetCookieParam(WebBrowserDialogSetCookieParam* param)
+    {
+        new System.Span<byte>(param, sizeof(WebBrowserDialogSetCookieParam)).Clear();
+        param->Size = (ulong)sizeof(WebBrowserDialogSetCookieParam);
+    }
+
     /// <summary>Starts the browser-dialog subsystem.</summary>
     /// <returns>Zero on success, or a negative error code.</returns>
     [LibraryImport(Lib)]
@@ -168,6 +242,16 @@ public static unsafe partial class WebBrowserDialog
     /// <returns>Zero on success, or a negative error code.</returns>
     [LibraryImport(Lib)]
     public static partial int sceWebBrowserDialogOpen(WebBrowserDialogParam* param);
+
+    /// <summary>
+    /// Opens a dialog described by <paramref name="param"/> without a parental-control check. The
+    /// browser only reaches an address listed in <paramref name="param2"/>.
+    /// </summary>
+    /// <returns>Zero on success, or a negative error code.</returns>
+    [LibraryImport(Lib)]
+    public static partial int sceWebBrowserDialogOpenForPredeterminedContent(
+        WebBrowserDialogParam* param,
+        WebBrowserDialogPredeterminedContentParam* param2);
 
     /// <summary>Advances and returns the dialog's status. Call once per frame while it is open.</summary>
     [LibraryImport(Lib)]
@@ -188,4 +272,14 @@ public static unsafe partial class WebBrowserDialog
     /// <summary>Shuts the browser-dialog subsystem down.</summary>
     [LibraryImport(Lib)]
     public static partial int sceWebBrowserDialogTerminate();
+
+    /// <summary>Clears the browser dialog's session cookies.</summary>
+    /// <returns>Zero on success, or a negative error code.</returns>
+    [LibraryImport(Lib)]
+    public static partial int sceWebBrowserDialogResetCookie(WebBrowserDialogResetCookieParam* param);
+
+    /// <summary>Adds one cookie to the browser dialog's session store.</summary>
+    /// <returns>Zero on success, or a negative error code.</returns>
+    [LibraryImport(Lib)]
+    public static partial int sceWebBrowserDialogSetCookie(WebBrowserDialogSetCookieParam* param);
 }

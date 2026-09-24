@@ -99,6 +99,31 @@ public sealed class ListView : UiElement
             SetSelected(_selectedIndex + 1, notify: true);
             return true;
         }
+        // Page keys jump the selection by roughly a visible window, then leave the input at either edge
+        // so focus can move away. The one-row overlap keeps the previous top row of context visible
+        // after a page down.
+        int page = Math.Max(1, Math.Max(1, VisibleRows) - 1);
+        if (input.PageUp && _selectedIndex > 0)
+        {
+            SetSelected(_selectedIndex - page, notify: true);
+            return true;
+        }
+        if (input.PageDown && _selectedIndex < _items.Count - 1)
+        {
+            SetSelected(_selectedIndex + page, notify: true);
+            return true;
+        }
+        // Home and End jump to the ends of the list.
+        if (input.Home && _selectedIndex > 0)
+        {
+            SetSelected(0, notify: true);
+            return true;
+        }
+        if (input.End && _selectedIndex < _items.Count - 1)
+        {
+            SetSelected(_items.Count - 1, notify: true);
+            return true;
+        }
         // At the top or bottom edge (or no vertical input): leave the input for the screen so focus can
         // move to a neighbor.
         return false;

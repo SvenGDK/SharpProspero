@@ -25,6 +25,8 @@ public abstract class ProsperoApp(AppConfig? config = null) : IDisposable
     private DisplayDevice? _display;
     private GamePad? _gamePad;
     private bool _disposed;
+    private int _torn;
+    private bool _userServiceInitialized;
 
     /// <summary>The startup settings.</summary>
     public AppConfig Config { get; } = config ?? new AppConfig();
@@ -99,7 +101,53 @@ public abstract class ProsperoApp(AppConfig? config = null) : IDisposable
         }
         finally
         {
-            OnUnload();
+            // A background thread may have posted work between the last run of the dispatcher and
+            // the exit check; running it now lets it release anything it holds before the subclass
+            // pulls resources out from under it. A throw here is caught so it cannot stop the rest
+            // of teardown.
+            try { _context.Dispatcher.RunPending(); }
+            catch { }
+
+            // Any still-running common dialog is drained here, before the subclass has a chance to
+            // dispose it. The dialog subsystem's terminate calls are unconditional: a close in
+            // flight leaves the shell holding an orphan client for this appId, and the shell's own
+            // post-exit dialog cleanup then reaches into a client whose destructor already ran,
+            // which is the crash the user sees on the way back to the home menu. The pump reads
+            // the subsystem's own state and bounds the wait so a shell that never answers cannot
+            // hold this path forever.
+            try { DrainCommonDialogs(); }
+            catch { }
+
+            // Subclass releases what OnLoad brought up. A throw is caught for the same reason.
+            try { OnUnload(); }
+            catch { }
+
+            // A callback the subclass queued during OnUnload is run one more time before base
+            // teardown starts, so a background thread that raced with the unload does not leave
+            // its resource holder alive past the finalizer.
+            try { _context.Dispatcher.RunPending(); }
+            catch { }
+
+            // Base teardown, on the frame thread, before Run returns. Doing it here rather than
+            // waiting for a caller-side Dispose means a caller that starts a run without a using
+            // block still gets correct teardown.
+            TearDown();
+        }
+    }
+
+    // Polls the dialog subsystem's own "used" flag until it clears, at roughly the frame rate for
+    // as long as one second. The dialog subsystem's worker thread advances the state independently
+    // of the frame thread, so a short sleep between polls is what waits on it. Returns silently on
+    // timeout; the caller then continues to teardown.
+    private static void DrainCommonDialogs()
+    {
+        if (!Interop.Dialog.CommonDialog.sceCommonDialogIsUsed())
+            return;
+        for (int i = 0; i < 60; i++)
+        {
+            if (!Interop.Dialog.CommonDialog.sceCommonDialogIsUsed())
+                return;
+            System.Threading.Thread.Sleep(16);
         }
     }
 
@@ -146,27 +194,74 @@ public abstract class ProsperoApp(AppConfig? config = null) : IDisposable
     private void InitializeServices()
     {
         // The service calls are tolerant: a module launched by the system may find them already
-        // started, which the return code reports without preventing the loop from running.
+        // started, which the return code reports without preventing the loop from running. Only the
+        // first-success case counts as "we now owe a terminate on the way out"; a service that was
+        // already up is one another layer brought up and will bring down itself.
         unsafe
         {
             int priority = 700;
-            UserService.sceUserServiceInitialize(&priority);
+            int rc = UserService.sceUserServiceInitialize(&priority);
+            if (rc == 0)
+                _userServiceInitialized = true;
         }
 
         if (Config.HideSplashScreen)
             SystemService.sceSystemServiceHideSplashScreen();
     }
 
-    /// <summary>Tears down the controller and display.</summary>
+    /// <summary>Tears down the controller, display and user-service session. Safe to call more than once.</summary>
+    /// <remarks>
+    /// Base teardown runs from <see cref="Run"/>'s finally-block, so a caller that starts a run without
+    /// a using-block still gets correct teardown; the wrapping using-block reaches the same method
+    /// through <see cref="Dispose"/>, and the idempotent guard makes the second call a no-op.
+    /// </remarks>
     public void Dispose()
     {
         if (_disposed)
             return;
         _disposed = true;
-
-        _gamePad?.Dispose();
-        _display?.Dispose();
-        UserService.sceUserServiceTerminate();
+        TearDown();
         GC.SuppressFinalize(this);
+    }
+
+    // The base's own teardown, in one place, safe to call from both Run's finally and Dispose. The
+    // controller closes first (it belongs to a user session, and closing it before terminating that
+    // session is the order the service expects), then the display drains and releases its buffers,
+    // then the user-service session ends. Each step is guarded so a throw in one still lets the
+    // next run — leaking one holder because a previous step threw leaves the process holding a
+    // device the system looks for on the way out, and the process is told that as a fault rather
+    // than as a clean exit. The user-service terminate runs only when the initialize we ran on the
+    // way in reported it as ours.
+    private void TearDown()
+    {
+        // Atomic guard: whichever caller races here first wins the tear-down; the other returns
+        // at once. Two concurrent tear-downs would otherwise both terminate the user service or
+        // both dispose the display, and the second call to either is the fault the guard is here
+        // to prevent.
+        if (System.Threading.Interlocked.Exchange(ref _torn, 1) != 0)
+            return;
+
+        GamePad? gamePad = _gamePad;
+        _gamePad = null;
+        if (gamePad is not null)
+        {
+            try { gamePad.Dispose(); }
+            catch { }
+        }
+
+        DisplayDevice? display = _display;
+        _display = null;
+        if (display is not null)
+        {
+            try { display.Dispose(); }
+            catch { }
+        }
+
+        if (_userServiceInitialized)
+        {
+            try { UserService.sceUserServiceTerminate(); }
+            catch { }
+            _userServiceInitialized = false;
+        }
     }
 }

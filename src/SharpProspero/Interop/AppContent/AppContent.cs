@@ -53,6 +53,17 @@ public struct SceAppContentAddcontDownloadProgress
     public ulong DownloadedSize;
 }
 
+/// <summary>The status and label of one piece of additional content.</summary>
+[StructLayout(LayoutKind.Sequential, Size = 24)]
+public struct SceAppContentAddcontInfo
+{
+    /// <summary>The label that names this content.</summary>
+    public SceNpUnifiedEntitlementLabel EntitlementLabel;
+
+    /// <summary>The current status of this content.</summary>
+    public uint Status;
+}
+
 /// <summary>The label that names one piece of purchasable content.</summary>
 [StructLayout(LayoutKind.Sequential, Size = 20)]
 public unsafe struct SceNpUnifiedEntitlementLabel
@@ -79,6 +90,10 @@ public static unsafe partial class AppContent
     /// <summary>Reads an integer application parameter into <paramref name="value"/>.</summary>
     [LibraryImport(Lib)]
     public static partial int sceAppContentAppParamGetInt(int paramId, int* value);
+
+    /// <summary>Reads a string application parameter into <paramref name="buf"/>.</summary>
+    [LibraryImport(Lib)]
+    public static partial int sceAppContentAppParamGetString(int paramId, byte* buf, nuint bufSize);
 
     /// <summary>
     /// Opens the per-title writable scratch area and writes its mount point into
@@ -131,4 +146,14 @@ public static unsafe partial class AppContent
         uint serviceLabel,
         SceNpUnifiedEntitlementLabel* entitlementLabel,
         SceAppContentAddcontDownloadProgress* progress);
+
+    /// <summary>Lists the additional content available to the calling title.</summary>
+    [LibraryImport(Lib)]
+    public static partial int sceAppContentGetAddcontInfoList(
+        uint serviceLabel, SceAppContentAddcontInfo* list, int listNum, int* hitNum);
+
+    /// <summary>Reads the status of one piece of additional content by its entitlement label.</summary>
+    [LibraryImport(Lib)]
+    public static partial int sceAppContentGetAddcontInfo(
+        uint serviceLabel, SceNpUnifiedEntitlementLabel* entitlementLabel, SceAppContentAddcontInfo* info);
 }

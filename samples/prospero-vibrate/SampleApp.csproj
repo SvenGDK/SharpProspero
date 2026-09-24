@@ -1,0 +1,41 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Point SharpProsperoRoot at the SDK checkout, or set the SHARPPROSPERO_ROOT environment
+       variable. Run `doctor.ps1` in the SDK to check the setup. -->
+  <PropertyGroup>
+    <SharpProsperoRoot Condition="'$(SharpProsperoRoot)' == ''">$(SHARPPROSPERO_ROOT)</SharpProsperoRoot>
+  </PropertyGroup>
+
+  <Import Project="$(SharpProsperoRoot)\build\Prospero.App.props" />
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>SampleApp</RootNamespace>
+    <AssemblyName>SampleApp</AssemblyName>
+    <TargetFramework>net10.0</TargetFramework>
+    <LangVersion>14.0</LangVersion>
+    <Nullable>enable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+
+    <ProsperoModuleName>eboot.bin</ProsperoModuleName>
+    <ProsperoHeapHardLimitBytes>268435456</ProsperoHeapHardLimitBytes>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="$(SharpProsperoRoot)\src\SharpProspero\SharpProspero.csproj" />
+  </ItemGroup>
+
+  <!-- Keep the test project out of the app build. -->
+  <ItemGroup>
+    <Compile Remove="tests\**\*.cs" />
+    <None Remove="tests\**\*" />
+    <EmbeddedResource Remove="tests\**\*" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Update="sce_sys\**\*" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <Import Project="$(SharpProsperoRoot)\build\Prospero.App.targets" />
+
+</Project>

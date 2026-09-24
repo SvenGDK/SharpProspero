@@ -36,15 +36,34 @@ public sealed class Stepper : UiElement
     /// <summary>The label shown at the left.</summary>
     public string Text { get; set; }
     /// <summary>The smallest allowed value.</summary>
-    public long Minimum { get; }
+    public long Minimum { get; private set; }
     /// <summary>The largest allowed value.</summary>
-    public long Maximum { get; }
+    public long Maximum { get; private set; }
     /// <summary>How much one press moves the value.</summary>
     public long Step { get; }
     /// <summary>Turns the value into the text shown; the plain number when null.</summary>
     public Func<long, string>? Format { get; set; }
     /// <summary>Called with the new value each time it changes.</summary>
     public Action<long>? Changed { get; set; }
+
+    /// <summary>
+    /// Widens or narrows the value range. The current value is clamped into the new range and, when the
+    /// clamp moves it, <see cref="Changed"/> is raised so a caller mirroring the stepper hears the update.
+    /// Use it to grow the editing range when the underlying data grows.
+    /// </summary>
+    /// <exception cref="ArgumentException"><paramref name="min"/> exceeds <paramref name="max"/>.</exception>
+    public void SetRange(long min, long max)
+    {
+        if (min > max)
+            throw new ArgumentException("The minimum must not exceed the maximum.", nameof(min));
+        Minimum = min;
+        Maximum = max;
+        long clamped = Math.Clamp(_value, min, max);
+        if (clamped == _value)
+            return;
+        _value = clamped;
+        Changed?.Invoke(_value);
+    }
 
     /// <summary>The current value; setting it clamps to the range.</summary>
     public long Value

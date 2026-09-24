@@ -300,6 +300,20 @@ foreach ($folder in @("sce_sys", "sce_module")) {
     Copy-Item -Recurse -Force $source $destination
 }
 
+# 4a. Emit the compressed texture form the system reader looks for beside every icon*.png and pic*.png
+# in the gathered sce_sys folder. Nothing to do when no matching source is present.
+$gatheredSceSys = Join-Path $moduleFolder "sce_sys"
+if (Test-Path $gatheredSceSys) {
+    $hasMedia = @(Get-ChildItem -Path $gatheredSceSys -File -Filter *.png -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -match '^(icon|pic)' }).Count -gt 0
+    if ($hasMedia) {
+        Write-Host "== Textures =="
+        & dotnet run --project (Join-Path $SdkRoot "tools/SharpProspero.Bindings.Generator/SharpProspero.Bindings.Generator.csproj") `
+            -c $Configuration -- sceassets --folder $gatheredSceSys
+        if ($LASTEXITCODE -ne 0) { throw "The system-media texture step failed." }
+    }
+}
+
 # The title this build carries, when it is not the one the project's own metadata names. Installers
 # generally treat a title as already present and refuse to replace it, so a run meant to be installed
 # beside the last one needs a title of its own. Only the copy gathered here is changed; the project's

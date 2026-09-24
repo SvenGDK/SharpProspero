@@ -164,7 +164,16 @@ public sealed unsafe class MessageDialog : IDisposable
         return MessageDialogState.Finished;
     }
 
-    /// <summary>Closes the dialog if it is open, shuts it down, unloads the module, and frees its buffers.</summary>
+    /// <summary>Closes the dialog if it is open, drains its state to finished, shuts it down, unloads the module, and frees its buffers.</summary>
+    /// <remarks>
+    /// The dialog terminate call is unconditional: it invokes the client's own destructor whatever
+    /// state the dialog is in, and terminating a dialog whose close request is still in flight
+    /// leaves the shell-side client bound to this application's identifier. The shell then reaches
+    /// into that client from its own post-exit cleanup and faults after this process is gone, which
+    /// is the crash the user sees on the way back to the home menu. Pumping the status to Finished
+    /// first draws the close through cleanly. The wait is bounded so a shell that never answers
+    /// cannot hold the exit path forever.
+    /// </remarks>
     public void Dispose()
     {
         if (_disposed)
@@ -174,12 +183,36 @@ public sealed unsafe class MessageDialog : IDisposable
         {
             if (!_finished)
                 Native.sceMsgDialogClose();
+            SpinUntilFinished();
             Native.sceMsgDialogTerminate();
         }
         _module.Dispose();
 
         if (_message != null) { NativeMemory.Free(_message); _message = null; }
         if (_subParam != null) { NativeMemory.Free(_subParam); _subParam = null; }
+    }
+
+    // Polls the dialog subsystem's own state until it reports Finished, at roughly the frame rate
+    // for as long as one second. The subsystem's worker thread advances the state independently of
+    // this thread, so a short sleep between polls is what waits on it. Returns silently on timeout;
+    // the caller then continues to Terminate.
+    private void SpinUntilFinished()
+    {
+        if (_finished)
+            return;
+        for (int i = 0; i < 60; i++)
+        {
+            if (Native.sceMsgDialogUpdateStatus() == CommonDialogStatus.Finished)
+            {
+                SceMsgDialogResult result;
+                new Span<byte>(&result, sizeof(SceMsgDialogResult)).Clear();
+                if (SceResult.Succeeded(Native.sceMsgDialogGetResult(&result)))
+                    ChosenButton = result.ButtonId;
+                _finished = true;
+                return;
+            }
+            System.Threading.Thread.Sleep(16);
+        }
     }
 
     // Brings the dialog up as far as its own initialize. The module is handed to the object before that

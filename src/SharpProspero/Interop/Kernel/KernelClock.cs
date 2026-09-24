@@ -49,6 +49,13 @@ public static unsafe partial class KernelClock
     public static partial int sceKernelUsleep(uint microseconds);
 
     /// <summary>
+    /// Suspends the calling thread for <paramref name="seconds"/> whole seconds.
+    /// </summary>
+    /// <returns>Zero when the whole interval elapsed, or the seconds left when the wait ended early.</returns>
+    [LibraryImport(Lib)]
+    public static partial uint sceKernelSleep(uint seconds);
+
+    /// <summary>
     /// Suspends the calling thread for <paramref name="requested"/>. When the wait ends early the time
     /// left is written to <paramref name="remaining"/>, which may be null.
     /// </summary>

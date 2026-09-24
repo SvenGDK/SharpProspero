@@ -141,12 +141,17 @@ public sealed class TabView : UiElement
     /// <inheritdoc/>
     internal override void Arrange(UiRect bounds, UiTheme theme)
     {
-        Bounds = bounds;
+        // Bounds anchor the tab row itself. Focus navigation from the tab row measures against this
+        // narrow band so pressing down from the row moves into the first content control below,
+        // instead of past it into the lower half of the whole area.
+        int headerHeight = theme.RowHeight;
+        Bounds = new UiRect(bounds.X, bounds.Y, bounds.Width, headerHeight);
+
         UiElement? content = SelectedContent;
         if (content is null || !content.Visible)
             return;
 
-        int top = bounds.Y + theme.RowHeight + theme.Spacing;
+        int top = bounds.Y + headerHeight + theme.Spacing;
         int height = Math.Max(0, bounds.Bottom - top);
         content.Arrange(new UiRect(bounds.X, top, bounds.Width, height), theme);
     }

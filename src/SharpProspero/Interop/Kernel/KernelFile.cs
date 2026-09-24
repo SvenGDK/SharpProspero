@@ -112,6 +112,21 @@ public static unsafe partial class KernelFile
     /// <summary>Fail if the path is not a directory. Required to list a directory.</summary>
     public const int Directory = 0x00020000;
 
+    /// <summary>Do not block; report right away when the read or open would wait.</summary>
+    public const int NonBlock = 0x0004;
+
+    /// <summary>Close the descriptor across an exec, so it does not leak into a spawned process.</summary>
+    public const int CloseOnExec = 0x00100000;
+
+    /// <summary>
+    /// The flag word the platform's own opendir passes to _open when it opens a directory. Any
+    /// caller that wants to walk a directory should use this word instead of composing the bits
+    /// itself, so the kernel path-resolution layer sees exactly what a system-issued opendir sends.
+    /// Equal to <see cref="ReadOnly"/> | <see cref="NonBlock"/> | <see cref="Directory"/>
+    /// | <see cref="CloseOnExec"/>, which is <c>0x00120004</c>.
+    /// </summary>
+    public const int OpenDirectory = ReadOnly | NonBlock | Directory | CloseOnExec;
+
     /// <summary>Seek relative to the start of the file.</summary>
     public const int SeekSet = 0;
 
@@ -247,4 +262,156 @@ public static unsafe partial class KernelFile
     /// <returns>Zero on success, or -1.</returns>
     [LibraryImport(Lib)]
     public static partial int ftruncate(int descriptor, long length);
+
+    /// <summary>Sets the permission bits of the file at <paramref name="path"/>.</summary>
+    /// <remarks>
+    /// The <paramref name="mode"/> argument follows POSIX conventions - 0x1ED = 0755 marks the file as
+    /// executable by everyone, 0x1B6 = 0666 as readable and writable by everyone. Executable bits are
+    /// what the platform loader tests before it maps an <c>eboot.bin</c> or a shared module for
+    /// execution, so a launcher that copies binaries into place first has to set them here.
+    /// </remarks>
+    /// <returns>Zero on success, or -1.</returns>
+    [LibraryImport(Lib)]
+    public static partial int chmod(byte* path, ushort mode);
+
+    /// <summary>Sets the permission bits of an open descriptor.</summary>
+    /// <returns>Zero on success, or -1.</returns>
+    [LibraryImport(Lib)]
+    public static partial int fchmod(int descriptor, ushort mode);
+
+    /// <summary>
+    /// Reads a batch of directory entries from an open descriptor into the caller's buffer, walking
+    /// forward from the descriptor's current offset. Every entry is a FreeBSD <c>struct dirent</c>
+    /// with fields at offsets 0 (fileno u32), 4 (reclen u16), 6 (type u8), 7 (namlen u8), 8 (name).
+    /// </summary>
+    /// <returns>
+    /// The number of bytes packed into <paramref name="buffer"/>, zero at end of directory, or -1.
+    /// </returns>
+    [LibraryImport(Lib)]
+    public static partial int getdents(int descriptor, byte* buffer, nuint length);
+
+    /// <summary>Fetches or sets a descriptor attribute. Value 3.</summary>
+    /// <remarks>The paired <c>F_GETFL</c>/<c>F_SETFL</c> pair reads and writes the open-time flags.</remarks>
+    public const int FcntlGetFlags = 3;
+
+    /// <summary>Sets the descriptor's open-time flags to the third argument.</summary>
+    public const int FcntlSetFlags = 4;
+
+    /// <summary>Ask a light-weight file system to work in cooperation mode. Value 0.</summary>
+    public const int LwfsDisable = 0;
+
+    /// <summary>Ask a light-weight file system to work in its exclusive mode. Value 1.</summary>
+    public const int LwfsEnable = 1;
+
+    /// <summary>Seek relative to the start of the file, for a light-weight file system. Value 0.</summary>
+    public const int LwfsSeekSet = 0;
+
+    /// <summary>Seek relative to the current offset, for a light-weight file system. Value 1.</summary>
+    public const int LwfsSeekCurrent = 1;
+
+    /// <summary>Seek relative to the end of the file, for a light-weight file system. Value 2.</summary>
+    public const int LwfsSeekEnd = 2;
+
+    /// <summary>
+    /// Seek to the last byte of the file where data has been written, for a light-weight file system.
+    /// Value 3.
+    /// </summary>
+    public const int LwfsSeekDataEnd = 3;
+
+    /// <summary>
+    /// Sets or reads a per-descriptor attribute. The third argument depends on <paramref name="cmd"/>:
+    /// <see cref="FcntlSetFlags"/> takes an int, <see cref="FcntlGetFlags"/> ignores it.
+    /// </summary>
+    /// <returns>The command's own return, or a negative error code.</returns>
+    [LibraryImport(Lib)]
+    public static partial int sceKernelFcntl(int descriptor, int cmd, int arg);
+
+    /// <summary>
+    /// Fills <paramref name="status"/> with the file status of <paramref name="path"/> (following a
+    /// symbolic link to what it names).
+    /// </summary>
+    /// <returns>Zero on success, or a negative error code.</returns>
+    [LibraryImport(Lib)]
+    public static partial int sceKernelStat(byte* path, SceKernelStat* status);
+
+    /// <summary>Sets the permission bits of the file at <paramref name="path"/>.</summary>
+    /// <returns>Zero on success, or a negative error code.</returns>
+    [LibraryImport(Lib)]
+    public static partial int sceKernelChmod(byte* path, ushort mode);
+
+    /// <summary>Writes everything buffered for <paramref name="descriptor"/> out to its device.</summary>
+    /// <returns>Zero on success, or a negative error code.</returns>
+    [LibraryImport(Lib)]
+    public static partial int sceKernelFsync(int descriptor);
+
+    /// <summary>Sets the length of an open file. Reports a negative error code on failure.</summary>
+    [LibraryImport(Lib)]
+    public static partial int sceKernelFtruncate(int descriptor, long length);
+
+    /// <summary>
+    /// Reads into a scatter list of <paramref name="iovcnt"/> buffers, filling them in order until the
+    /// count is exhausted or the file ends.
+    /// </summary>
+    /// <returns>The total byte count read (zero at end of file), or a negative error code.</returns>
+    [LibraryImport(Lib)]
+    public static partial long sceKernelReadv(int descriptor, SceKernelIovec* iov, int iovcnt);
+
+    /// <summary>Writes from a gather list of <paramref name="iovcnt"/> buffers, in order.</summary>
+    /// <returns>The total byte count written, or a negative error code.</returns>
+    [LibraryImport(Lib)]
+    public static partial long sceKernelWritev(int descriptor, SceKernelIovec* iov, int iovcnt);
+
+    /// <summary>
+    /// Reads into a scatter list of <paramref name="iovcnt"/> buffers at <paramref name="offset"/>
+    /// without moving the descriptor's own offset.
+    /// </summary>
+    [LibraryImport(Lib)]
+    public static partial long sceKernelPreadv(int descriptor, SceKernelIovec* iov, int iovcnt, long offset);
+
+    /// <summary>
+    /// Writes from a gather list of <paramref name="iovcnt"/> buffers at <paramref name="offset"/>
+    /// without moving the descriptor's own offset.
+    /// </summary>
+    [LibraryImport(Lib)]
+    public static partial long sceKernelPwritev(int descriptor, SceKernelIovec* iov, int iovcnt, long offset);
+
+    /// <summary>
+    /// Turns a light-weight file-system descriptor into its exclusive mode (<see cref="LwfsEnable"/>) or
+    /// back to cooperative (<see cref="LwfsDisable"/>).
+    /// </summary>
+    /// <returns>Zero on success, or a negative error code.</returns>
+    [LibraryImport(Lib)]
+    public static partial int sceKernelLwfsSetAttribute(int descriptor, int flags);
+
+    /// <summary>Reserves <paramref name="size"/> bytes of contiguous storage for later writes on <paramref name="descriptor"/>.</summary>
+    [LibraryImport(Lib)]
+    public static partial int sceKernelLwfsAllocateBlock(int descriptor, long size);
+
+    /// <summary>Releases <paramref name="size"/> bytes of the reservation that no writer has claimed.</summary>
+    [LibraryImport(Lib)]
+    public static partial int sceKernelLwfsTrimBlock(int descriptor, long size);
+
+    /// <summary>Moves the file offset within a light-weight file system, taking a <c>LwfsSeek*</c> whence.</summary>
+    /// <returns>The new offset, or a negative error code.</returns>
+    [LibraryImport(Lib)]
+    public static partial long sceKernelLwfsLseek(int descriptor, long offset, int whence);
+
+    /// <summary>Writes <paramref name="nbytes"/> from <paramref name="buffer"/> to <paramref name="descriptor"/>.</summary>
+    /// <returns>The byte count written, or a negative error code.</returns>
+    [LibraryImport(Lib)]
+    public static partial long sceKernelLwfsWrite(int descriptor, void* buffer, nuint nbytes);
+}
+
+/// <summary>
+/// One entry of a scatter or gather buffer list. The kernel's own name for this structure is
+/// <c>iovec</c>; the scatter and gather read and write calls each take an array of these.
+/// </summary>
+[StructLayout(LayoutKind.Sequential, Size = 16)]
+public unsafe struct SceKernelIovec
+{
+    /// <summary>The address of the buffer.</summary>
+    public void* Base;
+
+    /// <summary>The byte count of the buffer.</summary>
+    public nuint Length;
 }

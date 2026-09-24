@@ -81,7 +81,13 @@ public sealed unsafe class ErrorDialog : IDisposable
             : ErrorDialogState.Closed;
     }
 
-    /// <summary>Closes the dialog if it is open, shuts it down, and unloads the module.</summary>
+    /// <summary>Closes the dialog if it is open, drains its state to finished, shuts it down, and unloads the module.</summary>
+    /// <remarks>
+    /// The terminate call is unconditional. Terminating while the close is still in flight leaves
+    /// the shell-side client bound to this application's identifier and faults the shell on its
+    /// post-exit cleanup pass. Pumping the status past Running draws the close through cleanly.
+    /// The wait is bounded so a shell that never answers cannot hold the exit path forever.
+    /// </remarks>
     public void Dispose()
     {
         if (_disposed)
@@ -89,8 +95,21 @@ public sealed unsafe class ErrorDialog : IDisposable
         _disposed = true;
         if (_opened)
             Native.sceErrorDialogClose();
+        SpinUntilFinished();
         if (_initialized)
             Native.sceErrorDialogTerminate();
         _module.Dispose();
+    }
+
+    private void SpinUntilFinished()
+    {
+        if (!_opened)
+            return;
+        for (int i = 0; i < 60; i++)
+        {
+            if (Native.sceErrorDialogUpdateStatus() != CommonDialogStatus.Running)
+                return;
+            System.Threading.Thread.Sleep(16);
+        }
     }
 }

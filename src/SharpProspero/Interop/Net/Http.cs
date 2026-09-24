@@ -10,6 +10,14 @@ public static partial class NetPool
 {
     private const string Lib = "libSceNet";
 
+    /// <summary>
+    /// Brings the network service into a state where a pool can be created against it. Called once
+    /// per process, before any other <c>libSceNet</c> entry. Returns zero when the service has come
+    /// up or was already up; a nonzero return means the pool call would fail if it followed.
+    /// </summary>
+    [LibraryImport(Lib)]
+    public static partial int sceNetInit();
+
     /// <summary>Creates a memory pool, returning its id. This is the first network call.</summary>
     [LibraryImport(Lib, StringMarshalling = StringMarshalling.Utf8)]
     public static partial int sceNetPoolCreate(string name, int size, int flags);
@@ -52,6 +60,76 @@ public enum SceSslVersion : int
     Tls12 = 5,
 }
 
+/// <summary>The hash a certificate fingerprint is computed with.</summary>
+public enum SceSslFingerprintHashAlgorithm : int
+{
+    /// <summary>MD5, producing a 16-byte digest.</summary>
+    Md5 = 0,
+
+    /// <summary>SHA-1, producing a 20-byte digest.</summary>
+    Sha1 = 1,
+
+    /// <summary>SHA-224, producing a 28-byte digest.</summary>
+    Sha224 = 2,
+
+    /// <summary>SHA-256, producing a 32-byte digest.</summary>
+    Sha256 = 3,
+
+    /// <summary>SHA-384, producing a 48-byte digest.</summary>
+    Sha384 = 4,
+
+    /// <summary>SHA-512, producing a 64-byte digest.</summary>
+    Sha512 = 5,
+}
+
+/// <summary>How much of the TLS memory pool the service is currently holding.</summary>
+[StructLayout(LayoutKind.Sequential)]
+public struct SceSslMemoryPoolStats
+{
+    /// <summary>The pool's total size, as it was given to <see cref="Ssl.sceSslInit"/>.</summary>
+    public nuint PoolSize;
+
+    /// <summary>The highest amount the service has held at once since it was started.</summary>
+    public nuint MaxInuseSize;
+
+    /// <summary>The amount it is holding right now.</summary>
+    public nuint CurrentInuseSize;
+
+    /// <summary>Reserved. Leave zero.</summary>
+    public int Reserved;
+}
+
+/// <summary>
+/// A list of the certificate-authority certificates the service is holding, as opaque handles. Read
+/// with <see cref="Ssl.sceSslGetCaList"/> and released with <see cref="Ssl.sceSslFreeCaList"/>.
+/// </summary>
+[StructLayout(LayoutKind.Sequential)]
+public unsafe struct SceSslCaList
+{
+    /// <summary>An array of certificate handles, each usable with the certificate readers.</summary>
+    public void** CaCerts;
+
+    /// <summary>How many entries <see cref="CaCerts"/> has.</summary>
+    public int CaNum;
+}
+
+/// <summary>
+/// A list of the certificate-authority certificates the service is holding, as encoded bytes. Read
+/// with <see cref="Ssl.sceSslGetCaCerts"/> and released with <see cref="Ssl.sceSslFreeCaCerts"/>.
+/// </summary>
+[StructLayout(LayoutKind.Sequential)]
+public unsafe struct SceSslCaCerts
+{
+    /// <summary>An array of length-carrying byte blobs, one per certificate.</summary>
+    public SceSslData* CertData;
+
+    /// <summary>How many entries <see cref="CertData"/> has.</summary>
+    public nuint CertDataNum;
+
+    /// <summary>The pool the entries were allocated from. The service owns it.</summary>
+    public void* Pool;
+}
+
 /// <summary>
 /// TLS bindings. The service is started once for the process and hands back a context id; the HTTP
 /// service takes that id, and a connection can also be run directly over a socket the network bindings
@@ -85,6 +163,24 @@ public static unsafe partial class Ssl
 
     /// <summary>Read without consuming: the same bytes are returned by the next read.</summary>
     public const uint MsgFlagPeek = 0x00000003;
+
+    /// <summary>The size, in bytes, of an MD5 fingerprint.</summary>
+    public const uint FingerprintMd5DigestSize = 16;
+
+    /// <summary>The size, in bytes, of a SHA-1 fingerprint.</summary>
+    public const uint FingerprintSha1DigestSize = 20;
+
+    /// <summary>The size, in bytes, of a SHA-224 fingerprint.</summary>
+    public const uint FingerprintSha224DigestSize = 28;
+
+    /// <summary>The size, in bytes, of a SHA-256 fingerprint.</summary>
+    public const uint FingerprintSha256DigestSize = 32;
+
+    /// <summary>The size, in bytes, of a SHA-384 fingerprint.</summary>
+    public const uint FingerprintSha384DigestSize = 48;
+
+    /// <summary>The size, in bytes, of a SHA-512 fingerprint.</summary>
+    public const uint FingerprintSha512DigestSize = 64;
 
     /// <summary>Starts the TLS service with a pool of <paramref name="poolSize"/> bytes, returning a context id.</summary>
     [LibraryImport(Lib)]
@@ -176,6 +272,89 @@ public static unsafe partial class Ssl
     /// <summary>Drops what <see cref="sceSslLoadCert"/> added.</summary>
     [LibraryImport(Lib)]
     public static partial int sceSslUnloadCert(int sslCtxId);
+
+    /// <summary>Reads how much of the TLS memory pool is in use right now, and how much has ever been.</summary>
+    [LibraryImport(Lib)]
+    public static partial int sceSslGetMemoryPoolStats(int sslCtxId, SceSslMemoryPoolStats* currentStat);
+
+    /// <summary>
+    /// Fills <paramref name="caList"/> with the certificate-authority certificates the context is holding,
+    /// each as an opaque handle usable with the certificate readers. Release with
+    /// <see cref="sceSslFreeCaList"/>.
+    /// </summary>
+    [LibraryImport(Lib)]
+    public static partial int sceSslGetCaList(int sslCtxId, SceSslCaList* caList);
+
+    /// <summary>Releases what <see cref="sceSslGetCaList"/> filled in.</summary>
+    [LibraryImport(Lib)]
+    public static partial int sceSslFreeCaList(int sslCtxId, SceSslCaList* caList);
+
+    /// <summary>
+    /// Returns a handle to the certificate's subject name. The handle belongs to the context and must be
+    /// released with <see cref="sceSslFreeSslCertName"/> when finished.
+    /// </summary>
+    [LibraryImport(Lib)]
+    public static partial void* sceSslGetSubjectName(int sslCtxId, void* sslCert);
+
+    /// <summary>
+    /// Returns a handle to the certificate's issuer name. The handle belongs to the context and must be
+    /// released with <see cref="sceSslFreeSslCertName"/> when finished.
+    /// </summary>
+    [LibraryImport(Lib)]
+    public static partial void* sceSslGetIssuerName(int sslCtxId, void* sslCert);
+
+    /// <summary>Reads the last moment at which the certificate is still valid, as a microsecond tick.</summary>
+    [LibraryImport(Lib)]
+    public static partial int sceSslGetNotAfter(int sslCtxId, void* sslCert, ulong* limit);
+
+    /// <summary>Reads the first moment at which the certificate becomes valid, as a microsecond tick.</summary>
+    [LibraryImport(Lib)]
+    public static partial int sceSslGetNotBefore(int sslCtxId, void* sslCert, ulong* begin);
+
+    /// <summary>Reads how many entries a certificate name carries. Returns the count, or a negative error code.</summary>
+    [LibraryImport(Lib)]
+    public static partial int sceSslGetNameEntryCount(int sslCtxId, void* certName);
+
+    /// <summary>
+    /// Reads one entry of a certificate name into caller-provided buffers. <paramref name="entryNum"/>
+    /// selects the entry; <paramref name="oidname"/> receives its OID as text of up to
+    /// <paramref name="maxOidnameLen"/> bytes; <paramref name="value"/> receives its value, of up to
+    /// <paramref name="maxValueLen"/> bytes, and <paramref name="valueLen"/> reports how many bytes the
+    /// value actually took.
+    /// </summary>
+    [LibraryImport(Lib)]
+    public static partial int sceSslGetNameEntryInfo(int sslCtxId, void* certName, int entryNum,
+        byte* oidname, nuint maxOidnameLen, byte* value, nuint maxValueLen, nuint* valueLen);
+
+    /// <summary>Releases a certificate-name handle returned by the subject or issuer reader.</summary>
+    [LibraryImport(Lib)]
+    public static partial int sceSslFreeSslCertName(int sslCtxId, void* certName);
+
+    /// <summary>
+    /// Writes the certificate's fingerprint into <paramref name="fingerprint"/>. The buffer must hold at
+    /// least the number of bytes given by the matching <c>FingerprintXxxDigestSize</c> for
+    /// <paramref name="hashType"/>.
+    /// </summary>
+    [LibraryImport(Lib)]
+    public static partial int sceSslGetFingerprint(int sslCtxId, void* sslCert, int hashType, byte* fingerprint);
+
+    /// <summary>
+    /// Writes the certificate's serial number, in DER form, into <paramref name="sboData"/>. On entry
+    /// <paramref name="sboLen"/> holds the buffer size, and on return it holds how many bytes were written.
+    /// </summary>
+    [LibraryImport(Lib)]
+    public static partial int sceSslGetSerialNumber(int sslCtxId, void* sslCert, byte* sboData, nuint* sboLen);
+
+    /// <summary>
+    /// Fills <paramref name="caCerts"/> with the certificate-authority certificates the context is
+    /// holding, each as its own encoded byte blob. Release with <see cref="sceSslFreeCaCerts"/>.
+    /// </summary>
+    [LibraryImport(Lib)]
+    public static partial int sceSslGetCaCerts(int sslCtxId, SceSslCaCerts* caCerts);
+
+    /// <summary>Releases what <see cref="sceSslGetCaCerts"/> filled in.</summary>
+    [LibraryImport(Lib)]
+    public static partial int sceSslFreeCaCerts(int sslCtxId, SceSslCaCerts* caCerts);
 }
 
 /// <summary>
@@ -214,6 +393,46 @@ public unsafe struct SceHttpUriElement
 
     /// <summary>Reserved. Leave zero.</summary>
     public fixed byte Reserved[10];
+}
+
+/// <summary>Reports pool use by the HTTP context.</summary>
+[StructLayout(LayoutKind.Sequential)]
+public struct SceHttpMemoryPoolStats
+{
+    /// <summary>The whole pool.</summary>
+    public nuint PoolSize;
+
+    /// <summary>The largest amount ever taken at once.</summary>
+    public nuint MaxInuseSize;
+
+    /// <summary>The amount taken right now.</summary>
+    public nuint CurrentInuseSize;
+
+    /// <summary>Reserved. Leave zero.</summary>
+    public int Reserved;
+}
+
+/// <summary>Reports cookie-store use by the HTTP context.</summary>
+[StructLayout(LayoutKind.Sequential)]
+public struct SceHttpCookieStats
+{
+    /// <summary>The bytes stored right now.</summary>
+    public nuint CurrentInuseSize;
+
+    /// <summary>The cookies stored right now.</summary>
+    public uint CurrentInuseNum;
+
+    /// <summary>The largest amount ever stored at once.</summary>
+    public nuint MaxInuseSize;
+
+    /// <summary>The largest number of cookies ever stored at once.</summary>
+    public uint MaxInuseNum;
+
+    /// <summary>The number of cookies dropped to stay within limits.</summary>
+    public uint RemovedNum;
+
+    /// <summary>Reserved. Leave zero.</summary>
+    public int Reserved;
 }
 
 /// <summary>HTTP client bindings.</summary>
@@ -479,6 +698,16 @@ public static unsafe partial class Http
     public static partial int sceHttpsSetSslVersion(int id, SceSslVersion version);
 
     /// <summary>
+    /// Installs a per-template callback that decides how the TLS handshake handles a certificate
+    /// the built-in verifier flagged. The callback receives the verification context; returning
+    /// zero accepts the connection, and any non-zero value refuses it. Passing a callback that
+    /// returns zero lets a public host present a certificate whose issuer is not in the
+    /// platform's built-in CA store.
+    /// </summary>
+    [LibraryImport(Lib)]
+    public static partial int sceHttpsSetSslCallback(int id, void* callback, void* arg);
+
+    /// <summary>
     /// Splits a URL into <paramref name="output"/>, with the strings written into
     /// <paramref name="pool"/>. Call once with a null pool to learn the size through
     /// <paramref name="require"/>, then again with a pool that large.
@@ -511,4 +740,96 @@ public static unsafe partial class Http
     /// <summary>Collapses the dot segments in a path.</summary>
     [LibraryImport(Lib, StringMarshalling = StringMarshalling.Utf8)]
     public static partial int sceHttpUriSweepPath(byte* dst, string src, nuint srcSize);
+
+    /// <summary>Reads pool use by the HTTP context.</summary>
+    [LibraryImport(Lib)]
+    public static partial int sceHttpGetMemoryPoolStats(int httpCtxId, SceHttpMemoryPoolStats* currentStat);
+
+    /// <summary>
+    /// Creates a connection to <paramref name="serverName"/> on the named <paramref name="scheme"/>
+    /// and <paramref name="port"/>, returning its id.
+    /// </summary>
+    [LibraryImport(Lib, StringMarshalling = StringMarshalling.Utf8)]
+    public static partial int sceHttpCreateConnection(int tmplId, string serverName, string scheme,
+        ushort port, int isEnableKeepalive);
+
+    /// <summary>Creates a request on a connection with the given path, returning its id.</summary>
+    [LibraryImport(Lib, StringMarshalling = StringMarshalling.Utf8)]
+    public static partial int sceHttpCreateRequest(int connId, int method, string path, ulong contentLength);
+
+    /// <summary>
+    /// Creates a request whose method is given by name rather than by one of the numbered methods,
+    /// which is how a method outside that set is issued.
+    /// </summary>
+    [LibraryImport(Lib, StringMarshalling = StringMarshalling.Utf8)]
+    public static partial int sceHttpCreateRequest2(int connId, string method, string path, ulong contentLength);
+
+    /// <summary>Reads back whether authentication is on for a template, connection or request.</summary>
+    [LibraryImport(Lib)]
+    public static partial int sceHttpGetAuthEnabled(int id, int* isEnable);
+
+    /// <summary>Drops what the service cached during authentication challenges.</summary>
+    [LibraryImport(Lib)]
+    public static partial int sceHttpAuthCacheFlush(int httpCtxId);
+
+    /// <summary>Drops what the service cached while following redirects.</summary>
+    [LibraryImport(Lib)]
+    public static partial int sceHttpRedirectCacheFlush(int httpCtxId);
+
+    /// <summary>Reads back whether cookies are on for a template, connection or request.</summary>
+    [LibraryImport(Lib)]
+    public static partial int sceHttpGetCookieEnabled(int id, int* isEnable);
+
+    /// <summary>
+    /// Reads cookies for <paramref name="url"/> in the wire form used inside a request's Cookie header,
+    /// writing into <paramref name="cookie"/>. Call once with a null buffer to learn the size through
+    /// <paramref name="required"/>, then again with a buffer that large. <paramref name="isSecure"/>
+    /// includes cookies flagged Secure.
+    /// </summary>
+    [LibraryImport(Lib, StringMarshalling = StringMarshalling.Utf8)]
+    public static partial int sceHttpGetCookie(int httpCtxId, string url, byte* cookie, nuint* required,
+        nuint prepared, int isSecure);
+
+    /// <summary>Adds a cookie for <paramref name="url"/>, taking its wire form as <paramref name="cookie"/>.</summary>
+    [LibraryImport(Lib, StringMarshalling = StringMarshalling.Utf8)]
+    public static partial int sceHttpAddCookie(int httpCtxId, string url, string cookie, nuint cookieLength);
+
+    /// <summary>
+    /// Serializes the whole cookie store into <paramref name="buffer"/>. Call once with a null buffer to
+    /// learn the size through <paramref name="exportSize"/>, then again with a buffer that large.
+    /// </summary>
+    [LibraryImport(Lib)]
+    public static partial int sceHttpCookieExport(int httpCtxId, void* buffer, nuint bufferSize,
+        nuint* exportSize);
+
+    /// <summary>Replaces the cookie store with the contents of <paramref name="buffer"/>.</summary>
+    [LibraryImport(Lib)]
+    public static partial int sceHttpCookieImport(int httpCtxId, void* buffer, nuint bufferSize);
+
+    /// <summary>Drops every cookie in the store.</summary>
+    [LibraryImport(Lib)]
+    public static partial int sceHttpCookieFlush(int httpCtxId);
+
+    /// <summary>Reads cookie-store use by the HTTP context.</summary>
+    [LibraryImport(Lib)]
+    public static partial int sceHttpGetCookieStats(int httpCtxId, SceHttpCookieStats* stats);
+
+    /// <summary>Creates an epoll handle for non-blocking requests, writing it to <paramref name="eh"/>.</summary>
+    [LibraryImport(Lib)]
+    public static partial int sceHttpCreateEpoll(int httpCtxId, void** eh);
+
+    /// <summary>Destroys an epoll handle.</summary>
+    [LibraryImport(Lib)]
+    public static partial int sceHttpDestroyEpoll(int httpCtxId, void* eh);
+
+    /// <summary>
+    /// Reads back the epoll handle a request or connection is bound to, and the caller's object that
+    /// was set with it.
+    /// </summary>
+    [LibraryImport(Lib)]
+    public static partial int sceHttpGetEpoll(int id, void** eh, void** userArg);
+
+    /// <summary>Breaks the wait on an epoll handle, so any call blocked in it returns.</summary>
+    [LibraryImport(Lib)]
+    public static partial int sceHttpAbortWaitRequest(void* eh);
 }

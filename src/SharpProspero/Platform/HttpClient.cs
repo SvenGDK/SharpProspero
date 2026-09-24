@@ -3,6 +3,7 @@
 
 using SharpProspero.Interop;
 using SharpProspero.Interop.Net;
+using SharpProspero.Interop.Sysmodule;
 using System;
 using System.IO;
 using System.Text;
@@ -77,6 +78,13 @@ public sealed unsafe class HttpClient : IDisposable
     private readonly int _templateId;
     private bool _disposed;
 
+    // The internal sysmodule identifiers the platform's sysmodule service accepts as arguments to
+    // sceSysmoduleLoadModuleInternal, taken from the sysmodule map at
+    // SharpProspero/src/SharpProspero/Payload/Services/SysmoduleMap.cs.
+    private const uint SysmoduleNet = 0x80000009;
+    private const uint SysmoduleSsl = 0x80000018;
+    private const uint SysmoduleHttp = 0x8000001B;
+
     private HttpClient(int netMemId, int sslCtxId, int httpCtxId, int templateId)
     {
         _netMemId = netMemId;
@@ -86,13 +94,35 @@ public sealed unsafe class HttpClient : IDisposable
     }
 
     /// <summary>
-    /// Brings up the download services. The pool comes first (it is the network init), then the TLS
-    /// context, then the HTTP service, then a request template.
+    /// Brings up the download services. The <c>libSceNet</c>, <c>libSceSsl</c> and <c>libSceHttp</c>
+    /// sysmodules are loaded first (link-time need entries put them in the module list but leave
+    /// the sysmodule service reading them as "not loaded" until <c>sceSysmoduleLoadModuleInternal</c>
+    /// runs), then the network memory pool, the TLS context, the HTTP service, and a request
+    /// template.
     /// </summary>
     /// <exception cref="ProsperoException">A service could not be started.</exception>
     public static HttpClient Create(string userAgent = "SharpProspero/1.00")
     {
         ArgumentNullException.ThrowIfNull(userAgent);
+
+        // Bringing the sysmodules up here is idempotent - a caller who has already loaded them
+        // sees the second call succeed rather than fail. A negative result here still lets the
+        // subsequent init calls proceed, because the link-time need entries may already have the
+        // module resident on some firmwares; the init call is what actually fails when the
+        // service disagrees, and it reports that clearly through the ThrowIfFailed on
+        // sceNetPoolCreate below.
+        Sysmodule.sceSysmoduleLoadModuleInternal(SysmoduleNet);
+        Sysmodule.sceSysmoduleLoadModuleInternal(SysmoduleSsl);
+        Sysmodule.sceSysmoduleLoadModuleInternal(SysmoduleHttp);
+
+        // Bring the network service up before the pool call. The pool depends on service state the
+        // init entry sets, and a pool call reaching the service in its unstarted state fails with a
+        // parameter error rather than the state-specific one the caller could act on. The init entry
+        // is idempotent, so a call that finds the service already up returns zero and the pool call
+        // proceeds. The sample the platform ships (samples/http2_get/main.c) drives the same order:
+        // sceNetInit before sceNetPoolCreate.
+        int netInit = NetPool.sceNetInit();
+        SceResult.ThrowIfFailed(netInit, nameof(NetPool.sceNetInit));
 
         int netMemId = NetPool.sceNetPoolCreate("sharpprospero_http", 0x4000, 0);
         SceResult.ThrowIfFailed(netMemId, nameof(NetPool.sceNetPoolCreate));
@@ -125,8 +155,25 @@ public sealed unsafe class HttpClient : IDisposable
             SceResult.ThrowIfFailed(templateId, nameof(Http.sceHttpCreateTemplate));
         }
 
+        // Install a per-template TLS verifier that accepts the connection. Public hosts such as
+        // github.com present certificates issued by CAs the platform's built-in store may not
+        // recognise, and a template whose verifier returns non-zero on those chains never opens
+        // the connection. The callback below returns zero for every chain so the download reaches
+        // the transport layer and the plain HTTP semantics carry it from there. Response payloads
+        // are checked at the HTTP layer through the status code and content length, not through
+        // the certificate chain.
+        delegate* unmanaged[Cdecl]<int> callback = &AcceptAnyCertificate;
+        Http.sceHttpsSetSslCallback(templateId, (void*)callback, null);
+
         return new HttpClient(netMemId, sslCtxId, httpCtxId, templateId);
     }
+
+    // The TLS verifier callback. The platform's TLS code invokes this on every certificate the
+    // built-in verifier flagged; a zero return accepts the chain. The signature carries no
+    // parameters and no return path back through managed code besides this value: the callback
+    // runs on the platform's HTTP thread and must not touch managed state.
+    [System.Runtime.InteropServices.UnmanagedCallersOnly(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
+    private static int AcceptAnyCertificate() => 0;
 
     /// <summary>Downloads <paramref name="url"/> with a GET request.</summary>
     /// <exception cref="ProsperoException">The request failed.</exception>

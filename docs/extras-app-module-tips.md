@@ -146,6 +146,40 @@ if (context.Pressed(ScePadButton.Cross)) Jump(); // true only on the frame it go
 Start from `prospero-input` for a full tester, and see [Input](input.md) for motion, touch, rumble,
 the light bar, and named-action mapping.
 
+## Drive the vibration motors
+
+Reach for `GamePad.Vibration` before writing a per-frame pair by hand. It runs a frame-driven animator
+on top of the controller service, keeps a change detector so a pair reaches the motors only on the
+frames it changed, and covers a solid pair, a pulse, a blink, a ramp, and a queue of timed steps.
+
+```csharp
+Vibration v = gamePad.Vibration;
+v.Sequence([
+    VibrationStep.Hold(new VibrationLevels(200, 100), 0.15f),
+    VibrationStep.Rest(0.10f),
+    VibrationStep.FadeTo(new VibrationLevels(0, 240), 0.30f),
+]);
+
+// each frame in OnFrame:
+v.Update((float)context.DeltaSeconds);
+```
+
+`v.Stop()` stops the motors and ends any animation; `v.SetDriveMode(mode)` picks between the full range
+of the current controller generation and the earlier reduced range, and re-sends the current pair so a
+mid-playback mode change reaches the motors on the same frame. `Vibration.WeakenWhileMicrophoneInUse`
+weakens motors and trigger effects across every controller while the built-in microphone is in use.
+Start from `prospero-vibrate` for a live tester, a preset library, a custom-pattern editor and timed
+play.
+
+## Let the analog stick drive the menu
+
+Every screen built from the interface toolkit accepts the left analog stick as well as the d-pad.
+`UiInput.From` and `UiRepeater` fold the stick into their held-direction tables, so a user who
+prefers the stick lands on every focusable control the d-pad does. The threshold is 0.65 by default
+(the third argument on `UiInput.From`, the `StickThreshold` property on `UiRepeater`) so a resting
+hand at a slight tilt does not drift the focus around. See [Interface toolkit](ui.md) for the full
+navigation surface.
+
 ## Make and mix sound
 
 Generate tones with a `ToneGenerator`, layer them with an `AudioMixer`, and stream the mix to an

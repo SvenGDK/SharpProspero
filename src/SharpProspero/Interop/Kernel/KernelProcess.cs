@@ -44,6 +44,18 @@ public static unsafe partial class KernelProcess
     public static partial int getpid();
 
     /// <summary>
+    /// Sends signal <paramref name="signal"/> to process <paramref name="pid"/>. A pid of zero
+    /// sends the signal to every process in the calling process's own group. The signal number
+    /// follows the FreeBSD numbering the kernel uses (SIGKILL is 9).
+    /// </summary>
+    /// <returns>Zero on success, or a negative error code.</returns>
+    [LibraryImport(Lib)]
+    public static partial int kill(int pid, int signal);
+
+    /// <summary>SIGKILL: an uncatchable signal that ends the receiving process immediately.</summary>
+    public const int SIGKILL = 9;
+
+    /// <summary>
     /// The size of a memory page, which is also the alignment a mapping is made on. Matches
     /// <see cref="KernelMemory.PageSize"/>; read it here when the running system is the authority
     /// rather than the build.

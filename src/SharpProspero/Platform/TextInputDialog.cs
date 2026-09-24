@@ -180,7 +180,13 @@ public sealed unsafe class TextInputDialog : IDisposable
         }
     }
 
-    /// <summary>Closes the keyboard if it is open, shuts it down, and releases its buffers.</summary>
+    /// <summary>Closes the keyboard if it is open, drains its state to finished, shuts it down, and releases its buffers.</summary>
+    /// <remarks>
+    /// The terminate call is unconditional. Terminating while an abort is still in flight leaves
+    /// the shell-side client bound to this application's identifier and faults the shell on its
+    /// post-exit cleanup pass. Pumping the status to Finished draws the abort through cleanly.
+    /// The wait is bounded so a shell that never answers cannot hold the exit path forever.
+    /// </remarks>
     public void Dispose()
     {
         if (_disposed)
@@ -191,6 +197,7 @@ public sealed unsafe class TextInputDialog : IDisposable
         {
             if (!_finished)
                 ImeDialog.sceImeDialogAbort();
+            SpinUntilFinished();
             ImeDialog.sceImeDialogTerm();
         }
         _module.Dispose();
@@ -198,6 +205,24 @@ public sealed unsafe class TextInputDialog : IDisposable
         Free(ref _buffer);
         Free(ref _title);
         Free(ref _placeholder);
+    }
+
+    private void SpinUntilFinished()
+    {
+        if (_finished)
+            return;
+        for (int i = 0; i < 60; i++)
+        {
+            if (ImeDialog.sceImeDialogGetStatus() == ImeDialogStatus.Finished)
+            {
+                SceImeDialogResult result;
+                if (SceResult.Succeeded(ImeDialog.sceImeDialogGetResult(&result)))
+                    EndStatus = result.EndStatus;
+                _finished = true;
+                return;
+            }
+            System.Threading.Thread.Sleep(16);
+        }
     }
 
     private static char* AllocString(int capacity)

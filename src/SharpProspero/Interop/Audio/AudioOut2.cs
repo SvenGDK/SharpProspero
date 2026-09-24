@@ -485,4 +485,62 @@ public static unsafe partial class AudioOut2
     [LibraryImport(Lib)]
     public static partial int sceAudioOut2MasteringGetState(
         void* state, AudioOut2MasteringOutput output, nuint user);
+
+    // Low-latency mirror of the context / port family. Every entry takes the same handles and the
+    // same parameter blocks as its counterpart above; it drives the low-latency audio clock instead
+    // of the shared one, with a shallow queue and a small grain so the output answers as soon as
+    // the hardware clock will take it.
+
+    /// <summary>Starts the low-latency service.</summary>
+    [LibraryImport(Lib)] public static partial int sceAudioOut2LoInit();
+
+    /// <summary>Stops the low-latency service.</summary>
+    [LibraryImport(Lib)] public static partial int sceAudioOut2LoTerminate();
+
+    /// <summary>How much memory a low-latency context described by <paramref name="params"/> needs.</summary>
+    [LibraryImport(Lib)]
+    public static partial int sceAudioOut2LoContextQueryMemory(
+        SceAudioOut2ContextParam* @params, nuint* memorySize);
+
+    /// <summary>Creates a low-latency context in caller-supplied memory.</summary>
+    [LibraryImport(Lib)]
+    public static partial int sceAudioOut2LoContextCreate(
+        SceAudioOut2ContextParam* @params, void* buffer, nuint bufferSize, ulong* context);
+
+    /// <summary>Destroys a low-latency context and every port in it.</summary>
+    [LibraryImport(Lib)] public static partial int sceAudioOut2LoContextDestroy(ulong context);
+
+    /// <summary>Sets one or more low-latency context attributes.</summary>
+    [LibraryImport(Lib)]
+    public static partial int sceAudioOut2LoContextSetAttributes(
+        ulong context, SceAudioOut2Attribute* attributes, uint numAttributes);
+
+    /// <summary>Moves the low-latency context on to the next block of samples.</summary>
+    [LibraryImport(Lib)] public static partial int sceAudioOut2LoContextAdvance(ulong context);
+
+    /// <summary>Hands the block to the low-latency output, waiting for room or not.</summary>
+    [LibraryImport(Lib)] public static partial int sceAudioOut2LoContextPush(ulong context, AudioOut2Blocking blocking);
+
+    /// <summary>Reads how many low-latency pushes are waiting and how many more will fit.</summary>
+    [LibraryImport(Lib)]
+    public static partial int sceAudioOut2LoContextGetQueueLevel(
+        ulong context, uint* queueLevel, uint* availableQueues);
+
+    /// <summary>Opens a low-latency port on a context.</summary>
+    [LibraryImport(Lib)]
+    public static partial int sceAudioOut2LoPortCreate(
+        ulong context, SceAudioOut2PortParam* @params, ulong* port);
+
+    /// <summary>Closes a low-latency port.</summary>
+    [LibraryImport(Lib)] public static partial int sceAudioOut2LoPortDestroy(ulong port);
+
+    /// <summary>Sets one or more low-latency port attributes.</summary>
+    [LibraryImport(Lib)]
+    public static partial int sceAudioOut2LoPortSetAttributes(
+        ulong port, SceAudioOut2Attribute* attributes, uint numAttributes);
+
+    /// <summary>Reads where a low-latency port's samples are going and how loud.</summary>
+    [LibraryImport(Lib)]
+    public static partial int sceAudioOut2LoPortGetState(
+        ulong port, SceAudioOut2PortState* state);
 }

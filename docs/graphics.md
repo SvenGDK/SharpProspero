@@ -23,7 +23,7 @@ lower graphics-processor interface, see the child pages [2D scenes](graphics-sce
 ## The display
 
 `DisplayDevice` opens the main output, allocates its framebuffers from direct memory, registers them,
-and presents frames, holding each until the output reports it on screen.
+and presents frames on the vertical blank while the graphics processor draws into the next buffer.
 
 ```csharp
 using var display = DisplayDevice.Open(width: 1920, height: 1080, bufferCount: 2);
@@ -36,14 +36,20 @@ while (running)
 }
 ```
 
-`BackBuffer` is the framebuffer to draw the next frame into. `Present` submits it, waits until the
-output reports that flip as the one on screen, advances to the next framebuffer, and returns the
-presented frame index. When the flip queue is full, `Present` retries instead of failing. The default is
-a two-buffer swap chain; pass a higher `bufferCount` for triple buffering. The pixels are B8-G8-R8-A8
-sRGB. `Open` takes only the sizes the output accepts — 1920x1080, 3840x2160, 720x480, 720x576, or a
-width that is a multiple of 32 from 1280 to 1888 with a height of nine sixteenths of it — and throws
-`ArgumentOutOfRangeException` for anything else. Only 1920x1080 is accepted on every console; the rest
-need the console set up for them and are refused when the buffers are registered.
+`BackBuffer` is the framebuffer to draw the next frame into. `Present` submits its flip and advances to
+the next framebuffer, returning the presented frame index. The wait for a buffer to leave the screen
+sits at the start of the next `Present`, not at the end of this one, so the graphics processor draws
+frame N + 1 while the output scans out frame N; the first `bufferCount` calls have no earlier flip to
+wait for and skip the wait. Before submitting the flip, `Present` writes the back buffer's CPU cache
+lines back to memory so the scan-out engine reads what was drawn rather than a mixture of the previous
+frame and whatever the cache happened to evict — the direct-memory buffers a display holds are cached,
+and the display reads them through the memory controller rather than the CPU coherency domain. When the
+flip queue is full, `Present` retries instead of failing. The default is a two-buffer swap chain; pass
+a higher `bufferCount` for triple buffering. The pixels are B8-G8-R8-A8 sRGB. `Open` takes only the
+sizes the output accepts — 1920x1080, 3840x2160, 720x480, 720x576, or a width that is a multiple of 32
+from 1280 to 1888 with a height of nine sixteenths of it — and throws `ArgumentOutOfRangeException` for
+anything else. Only 1920x1080 is accepted on every console; the rest need the console set up for them
+and are refused when the buffers are registered.
 
 `Open` takes a `tiling` argument. The default, `VideoOutTilingMode.Tiled`, is accepted on any console
 and is what the graphics processor draws into; `BackBuffer` is then a row-major surface of its own that
@@ -56,14 +62,19 @@ For a caller that records its own flip on the graphics timeline, `OutputHandle`,
 `BackBufferAddress` and `FrameIndex` give the values the command buffer needs, and `AdvanceFrame` waits
 for that frame and rotates the swap chain in place of `Present`. `FlipStatus` reports how far the output
 has got through the flips submitted to it, and `Present` takes a `VideoOutFlipMode` (vertical sync by
-default).
+default). A frame drawn entirely on the graphics processor needs no CPU-side cache write-back before
+its own flip: the end-of-pipe cache invalidate the graphics pipe emits handles it. A caller that
+touches the scan-out buffer from the CPU before submitting its own flip must first call
+`SharpProspero.Memory.CpuCache.WriteBack` on the touched range so the display reads what was written
+rather than the previous frame's leftovers; see [GPU command layer](graphics-gpu.md#cache-write-back).
 
 ```mermaid
 flowchart LR
   A[Draw into BackBuffer] --> B[Present]
-  B --> C[Wait until that flip is on screen]
-  C --> D[Advance to next framebuffer]
-  D --> A
+  B --> C[Wait for the next buffer to leave the screen]
+  C --> D[Write cache back and submit new flip]
+  D --> E[Advance to next framebuffer]
+  E --> A
 ```
 
 {: .note }

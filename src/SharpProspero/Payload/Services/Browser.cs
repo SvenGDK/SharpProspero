@@ -24,12 +24,13 @@ public static unsafe partial class PayloadBrowser
 
     /// <summary>
     /// Launches the system web browser and navigates it to the given URI.
+    /// The URI must use the <c>http:</c>, <c>https:</c>, or <c>psno:</c> scheme and
+    /// be shorter than 6016 bytes (0x1780).
     /// </summary>
     /// <param name="uri">A NUL-terminated UTF-8 URI string (e.g. "http://192.168.1.1\0").</param>
-    /// <param name="param">Reserved. Pass <see langword="null"/>; the callee ignores it.</param>
     /// <returns>Zero on success, or a negative error code.</returns>
     [LibraryImport(Lib)]
-    public static partial int sceSystemServiceLaunchWebBrowser(byte* uri, void* param);
+    public static partial int sceSystemServiceLaunchWebBrowser(byte* uri);
 
     /// <summary>
     /// Launches the system web browser with a managed-friendly URI span.
@@ -39,6 +40,6 @@ public static unsafe partial class PayloadBrowser
     public static int LaunchWebBrowser(ReadOnlySpan<byte> uri)
     {
         fixed (byte* p = uri)
-            return sceSystemServiceLaunchWebBrowser(p, null);
+            return sceSystemServiceLaunchWebBrowser(p);
     }
 }

@@ -20,6 +20,20 @@ public readonly record struct UserProfile(int Id, string Name);
 /// </summary>
 public static unsafe class Users
 {
+    /// <summary>The id of the foreground user (the profile whose controller is active).</summary>
+    /// <exception cref="ProsperoException">The id could not be read.</exception>
+    public static int ForegroundUserId
+    {
+        get
+        {
+            int id = SceUser.Invalid;
+            SceResult.ThrowIfFailed(
+                Native.sceUserServiceGetForegroundUser(&id),
+                nameof(Native.sceUserServiceGetForegroundUser));
+            return id;
+        }
+    }
+
     /// <summary>The id of the user who started this application.</summary>
     /// <exception cref="ProsperoException">The id could not be read.</exception>
     public static int InitialUserId

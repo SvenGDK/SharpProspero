@@ -63,6 +63,15 @@ public static unsafe partial class KernelSystem
     public static partial int sceKernelGetOpenPsId(byte* openId);
 
     /// <summary>
+    /// Reads a system value identified by a numeric MIB (management information base) path into
+    /// <paramref name="oldp"/>. <paramref name="name"/> is an array of <paramref name="namelen"/>
+    /// integers that address the value in the tree. Returns -1 and sets errno on failure. The size in
+    /// and out is <paramref name="oldlenp"/>.
+    /// </summary>
+    [LibraryImport(Lib)]
+    public static partial int sysctl(int* name, uint namelen, void* oldp, nuint* oldlenp, void* newp, nuint newlen);
+
+    /// <summary>
     /// Reads a system value named by a dotted string (for example <c>hw.ncpu</c>) into
     /// <paramref name="oldp"/>. This is the libc-style call: it returns -1 and sets errno on failure,
     /// unlike the sce* calls. The size in and out is <paramref name="oldlenp"/>.
@@ -77,6 +86,17 @@ public static unsafe partial class KernelSystem
     /// </summary>
     [LibraryImport(Lib)]
     public static partial int* __error();
+
+    /// <summary>
+    /// Drives the debug output pins: the low bits of <paramref name="bits"/> reach the general-purpose
+    /// output on a devkit and are ignored elsewhere.
+    /// </summary>
+    [LibraryImport(Lib)]
+    public static partial void sceKernelSetGPO(uint bits);
+
+    /// <summary>Reads the debug input pins.</summary>
+    [LibraryImport(Lib)]
+    public static partial ulong sceKernelGetGPI();
 }
 
 /// <summary>Which thread the process stopped on, and why.</summary>

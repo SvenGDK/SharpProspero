@@ -18,6 +18,7 @@ Full documentation is in [docs/app-samples.md](../docs/app-samples.md) and
 | `prospero-media` | A media player that plays a bundled file, drawing the video and pacing to the audio. |
 | `prospero-server` | A network service that serves an HTTP control panel and a JSON status endpoint. |
 | `prospero-input` | An input tester that draws the live controller, keyboard and mouse state each frame. |
+| `prospero-vibrate` | A haptics studio: live motor control, a preset library, a custom-pattern editor, and timed play. |
 | `prospero-scene` | A scrolling 2D scene: a camera that follows a sprite, a tile map with collision, and a particle burst. |
 | `prospero-synth` | An audio synthesizer that generates and mixes tones and streams them to the output. |
 | `prospero-savedata` | A save browser that mounts a save, reads a counter, increments it, and writes it back. |

@@ -182,5 +182,28 @@ digest size and, for `Sha3`, changes with the chosen width (the sponge rate).
 | SHA3-384 | 48 bytes | 104 bytes |
 | SHA3-512 | 64 bytes | 72 bytes |
 
+## Symmetric encryption
+
+`Aes128` lives in the same namespace as the digests and implements the full 10-round Rijndael cipher
+with pre-computed T-tables. Construct it with a 16-byte key, then encrypt or decrypt in place a block
+at a time or a whole buffer in CBC or XTS mode. XTS needs a second `Aes128` for the tweak cipher, so
+two keys and two instances go together; the 16-byte initialisation vector or tweak block is written
+back through so a caller running a chain of buffers reads the running value between calls.
+
+```csharp
+using SharpProspero.Security;
+
+var cipher = new Aes128(key);        // any 16-byte key
+cipher.EncryptCbc(data, iv);         // buffer length must be a multiple of 16
+cipher.DecryptCbc(data, iv);
+
+var tweakCipher = new Aes128(tweakKey);
+cipher.EncryptXts(data, tweak, tweakCipher);
+cipher.DecryptXts(data, tweak, tweakCipher);
+```
+
+`EncryptBlock` and `DecryptBlock` cover the block primitive alone. The class computes on the caller's
+buffers and touches no system module, so it works the same in tests and on the device.
+
 For byte buffers and encodings that feed these hashes — span readers, ring buffers and Base-N text — see
 [Buffers and encodings](buffers.md).

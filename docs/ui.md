@@ -72,7 +72,14 @@ internal sealed class Menu : ProsperoApp
 ```
 
 `UiInput.From` reads the d-pad, cross and circle from this frame's sample and the previous one, so each
-press counts once. `Render` combines the layout and draw steps when you do not need them apart.
+press counts once. It also reads L1 and R1 as page-up / page-down and L2 and R2 as home / end so a
+scrolling window can be moved a full window at a time or jumped to either extreme. The left analog
+stick pulses the same four directions when it moves past its threshold, so a user who reaches for the
+stick still lands on every control the d-pad would. The threshold defaults to 0.65 - a firm push
+past the middle before a direction fires - and is the third argument on `UiInput.From` if a screen
+wants a lighter or firmer touch. Once the stick fires a direction it has to come back inside the
+threshold before the same direction fires again, so a stick held at an angle does not drift focus
+across the screen. `Render` combines the layout and draw steps when you do not need them apart.
 
 ## More than one screen
 
@@ -158,8 +165,10 @@ var scroller = new ScrollView(details) { ViewHeight = 300 };
 ```
 
 `ScrollView` takes focus only when there is more content than fits, and leaves up and down unused at
-either end so focus moves on instead of getting stuck. Content inside it is placed relative to the
-window rather than the screen, which is what clips it.
+either end so focus moves on instead of getting stuck. L1 and R1 page it a full window at a time and
+L2 and R2 jump to the top or the bottom, so a long block reads in a few presses rather than one row at
+a time. Content inside it is placed relative to the window rather than the screen, which is what clips
+it.
 
 Before something is deleted or overwritten, ask first. Make `ModalHost` the root of the screen and open
 a panel from a button; while it is open the content behind is dimmed and takes no focus, so the panel
@@ -235,7 +244,8 @@ busy.Visible = stillLoading;
 
 A `ListView` handles up and down itself to move its selection, but leaves them unused at its top and
 bottom rows, so pressing up on the first row or down on the last moves focus to the control above or
-below the list. This is what lets a list sit among other controls.
+below the list. This is what lets a list sit among other controls. L1 and R1 page the selection by a
+visible window and L2 and R2 jump to the first or last row.
 
 ## Focus moves the way you expect
 
@@ -254,15 +264,31 @@ var repeater = new UiRepeater();          // hold to repeat: one step, a pause, 
 screen.Update(repeater.Update(context.Input, (float)context.DeltaSeconds));
 ```
 
-Confirm and cancel are still reported once, so they never repeat. Call `repeater.Reset()` when focus
-jumps somewhere new so a held direction does not carry a repeat into it.
+The repeater treats a held d-pad and a held stick the same way. Its `StickThreshold` (default 0.65,
+matching `UiInput.From`) sets how far the left stick has to lean before it counts as held; below that
+the stick reads as at rest and a resting hand does not drift the highlight. `InitialDelay` and
+`RepeatInterval` set the wait before the first repeat and the cadence after it. Confirm, cancel and
+the L1/R1/L2/R2 scroll shortcuts are still reported once, so they never repeat. Call `repeater.Reset()`
+when focus jumps somewhere new so a held direction does not carry a repeat into it.
+
+### Keeping focus across a rebuild
+
+Rebuilding a control tree in place — a settings page that swaps its rows when a mode changes, a
+tabbed panel that rebuilds when the user switches tabs — normally sends focus back to the first
+focusable. `UiScreen.RestoreFocus(element)` sets a candidate the next `Layout` call tries to hold
+onto instead; if the same element is still in the rebuilt tree focus stays put, otherwise the layout
+falls back to the first focusable as usual. Hold the previously focused element in a field on the
+caller (the reference has to survive the rebuild) and hand it back after the new tree is built.
 
 ## More controls than fit
 
 When a settings form has more controls than the screen has room for, put them in a `ScrollMenu`. It holds
 focus as one unit and moves a highlight through its controls with up and down, scrolling to keep the
 focused control in view; confirm and adjust reach whichever control is focused. Up on the first control
-and down on the last are left for the screen, so focus can move out of the window.
+and down on the last are left for the screen, so focus can move out of the window. L1 and R1 page focus
+by roughly a window's worth of controls; L2 and R2 jump to the first or last focusable control. When
+the menu holds more rows than focusable controls (a status panel with a single action button at the
+bottom), those keys fall back to a plain content scroll so the whole panel can still be read.
 
 Add the leaf controls — buttons, checkboxes, sliders, selectors — to the menu itself. The highlight only
 visits its direct children, so a `StackPanel`, `Row` or `Grid` placed inside is drawn but never takes it,

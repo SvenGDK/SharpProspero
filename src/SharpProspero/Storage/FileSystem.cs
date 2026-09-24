@@ -122,10 +122,7 @@ public static unsafe class FileSystem
     private static int Read(string path, out List<DirectoryEntry> entries)
     {
         entries = [];
-        byte[] owned = ToNullTerminated(path);
-        int fd;
-        fixed (byte* p = owned)
-            fd = KernelFile.sceKernelOpen(p, KernelFile.ReadOnly | KernelFile.Directory, 0);
+        int fd = OpenDirectoryDescriptor(path);
         if (fd < 0)
             return fd;
         try
@@ -479,6 +476,18 @@ public static unsafe class FileSystem
         fixed (byte* p = owned)
             fd = KernelFile.sceKernelOpen(p, flags, mode);
         return SceResult.ThrowIfFailed(fd, nameof(KernelFile.sceKernelOpen));
+    }
+
+    // Opens a directory. The one call the platform's own opendir issues is what the kernel's own
+    // path-resolution layer is prepared for; no other flag combination changes what happens after
+    // the syscall reaches namei, and layering retries on top only hides the real reason behind an
+    // accidental cascade. The mount-namespace side of "why /data answers and /mnt/usb0 does" lives
+    // outside this call and is settled by the caller's own credentials and root-directory vnode.
+    private static int OpenDirectoryDescriptor(string path)
+    {
+        byte[] owned = ToNullTerminated(path);
+        fixed (byte* p = owned)
+            return KernelFile.sceKernelOpen(p, KernelFile.OpenDirectory, 0);
     }
 
     private static byte[] ToNullTerminated(string path)

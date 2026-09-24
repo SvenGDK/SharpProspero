@@ -59,7 +59,7 @@ Three overridable methods bracket the run. Only `OnFrame` is required.
 Inside the class a few members are available while running: `Display` returns the open `DisplayDevice`, `GamePad` returns the controller (or null when none opened), and `Dispatcher` is the hand-off point a worker thread uses to apply a result back on the frame thread. `Config` exposes the settings the app started with.
 
 {: .note }
-> `OnUnload` runs even when a frame throws. The exception still propagates to the caller and `Dispose` releases the display and controller, but your own cleanup is not skipped on the way out.
+> `OnUnload` runs even when a frame throws. The exception still propagates to the caller, but your own cleanup is not skipped on the way out. Before `OnUnload` runs, the loop drains any common dialog still open — polling the subsystem's own used-flag for as long as one second — so a dialog in flight settles before the subclass has a chance to dispose it. Base teardown then runs from `Run`'s finally block (controller first, display next, user-service session last), so a caller that starts a run without a `using` block still gets correct teardown. `Dispose` reaches the same teardown; an atomic guard makes the second call a no-op, and every step is wrapped so a throw in one still lets the next run.
 
 ## Startup settings
 
@@ -149,8 +149,11 @@ flowchart TD
     H --> I[Present the framebuffer]
     I --> J{ExitRequested?}
     J -->|no| D
-    J -->|yes| K[OnUnload]
-    K --> L[Dispose: release controller and display]
+    J -->|yes| K[Dispatcher: drain any last work]
+    K --> L[Drain any open common dialog]
+    L --> M[OnUnload]
+    M --> N[Dispatcher: run one more time]
+    N --> O[TearDown: release controller, display, user service]
 ```
 
 Because the loop reuses one context and draws into framebuffers allocated up front, a running application does not grow the heap each frame. Keep per-frame code free of allocation to hold that property; [Memory](memory.md) covers the heap ceiling and how to watch it.

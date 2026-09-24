@@ -23,6 +23,7 @@ Ready-to-build starting points for an application module. Each is a project dire
 | `prospero-media` | A media player that plays a bundled file, drawing the video and pacing the loop to the decoded audio. | A video or music player, or anything that plays a media file. |
 | `prospero-server` | A network service that serves an HTTP control panel and a JSON status endpoint from the frame loop. | A control panel, a file browser, or any service reached over the network. |
 | `prospero-input` | An input tester that draws the live controller, keyboard, and mouse state each frame. | A hardware test, a controller-heavy application, or learning the input API. |
+| `prospero-vibrate` | A haptics studio with Live, Presets, Custom, Timer and Settings tabs: direct motor control, a preset library, an eight-step custom-pattern editor, timed play, and a drive-mode picker. Persists to JSON under `/data/prospero-vibrate/`. | A rumble tester, a signal-feedback tool, or anywhere you need programmable vibration on the controller. |
 | `prospero-scene` | A scrolling 2D scene: a camera that follows a sprite, a tile map with collision, and a particle burst. | A 2D game or a map viewer with a moving camera. |
 | `prospero-synth` | An audio synthesizer that generates and mixes tones and streams them to the output. | A soundboard, an instrument, or anything that makes sound rather than plays a file. |
 | `prospero-savedata` | A save browser that mounts a save, reads a counter, increments it, and writes it back. | A save manager or a save editor. |
@@ -67,7 +68,7 @@ writes its `<name>.prx`, which you copy into an application's `sce_module` folde
 
 - **Applications** (`prospero-app`, `prospero-game`, `prospero-ui`, `prospero-launcher`,
   `prospero-filemanager`, `prospero-tool`, `prospero-media`, `prospero-server`, `prospero-input`,
-  `prospero-scene`, `prospero-synth`, `prospero-savedata`, `prospero-dialog`,
+  `prospero-vibrate`, `prospero-scene`, `prospero-synth`, `prospero-savedata`, `prospero-dialog`,
   `prospero-dashboard`, `prospero-3d`): `Program.cs`, the `sce_sys` package metadata
   (`param.json`, `icon0.png`), and a `SampleApp.csproj`.
 - **Library** (`prospero-prx`): `Library.cs` with `[UnmanagedCallersOnly]` exported functions, the

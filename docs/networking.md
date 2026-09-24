@@ -40,6 +40,7 @@ for a protocol the high-level types do not speak.
 | Serve many connections from one thread | `SocketPoller` |
 | Connect to a host by name | `HostResolver` |
 | Control the transfers the system is running | `DownloadService` |
+| Reach HTTP/2, host a wireless access point, or use IPv6 | See [Network bindings](net.md) |
 
 <details open markdown="block">
   <summary>On this page</summary>
@@ -100,6 +101,35 @@ int read = conn.Receive(buffer);                   // 0 means the peer closed th
 callers that manage their own buffering. `SetReceiveTimeout` bounds a blocking receive, in microseconds,
 with zero meaning wait forever; `RemoteAddress` reports the peer, and `Shutdown` stops sends, receives,
 or both without closing the socket.
+
+### Non-blocking connect
+
+`Connect` blocks until the handshake finishes, which is fine for loopback and a local network but not
+for a remote host on the frame loop. `BeginConnect` starts the connect on a non-blocking socket and
+returns at once. Register the connection with a `SocketPoller` for `PollEvents.Write`, and when it
+fires, call `GetSocketError` — zero means the connect succeeded, and a non-zero value is the reason
+it failed.
+
+```csharp
+using var conn = TcpConnection.BeginConnect(SocketAddress.Parse("192.168.1.10", 80));
+using var poller = SocketPoller.Create();
+poller.Add(conn.Handle, PollEvents.Write, token: 0);
+
+Span<PollReady> ready = stackalloc PollReady[1];
+if (poller.Wait(ready, timeoutMicroseconds: 5_000_000) > 0)
+{
+    int err = conn.GetSocketError();
+    if (err == 0)
+        conn.SendAll("GET / HTTP/1.0\r\n\r\n"u8);        // handshake done
+    else
+        Log("connect failed: " + err);
+}
+```
+
+`BeginConnect` returns cleanly for a loopback host that completes immediately, and for a remote host
+whose connect is still in progress. Any other failure surfaces as a `ProsperoException` with the
+socket already closed. Reading the error is what confirms the outcome; the socket becoming writable
+alone does not.
 
 ## A TCP server
 
@@ -162,8 +192,11 @@ be told to stop.
 ## Downloading over HTTP
 
 `HttpClient` downloads over HTTP and HTTPS, to fetch a file or a package from a URL. Create it, make as
-many requests as needed, dispose it. Creating it brings up the network pool, the TLS context, and the
-HTTP service in the order they depend on each other.
+many requests as needed, dispose it. Creating it loads the `libSceNet`, `libSceSsl` and `libSceHttp`
+sysmodules first (link-time need entries put them in the module list, but the sysmodule service
+reads them back as "not loaded" until `sceSysmoduleLoadModuleInternal` runs), then brings up the
+network pool, the TLS context, the HTTP service, and a request template in the order they depend on
+each other.
 
 ```csharp
 using var http = HttpClient.Create();
@@ -177,6 +210,11 @@ if (response.IsSuccess)
 header out without regard to case. `Create` accepts an optional user-agent string. `FileSystem` is
 covered in [Files and storage](storage.md); combined with the package installer in
 [Packages and devices](packages-devices.md), this downloads and installs a package from the network.
+
+Creating the client also installs a per-template TLS verifier that returns zero for every chain, so a
+public host whose certificate is issued by a certificate authority the platform's built-in store does
+not carry still reaches the transport layer. Response payloads are checked at the HTTP layer through
+the status code and content length rather than through the certificate chain.
 
 `Post` sends a body and names what it is. `Send` is the general form: it takes any `HttpMethod`, an
 optional body, and header lines of the form `Name: value`.
@@ -329,3 +367,11 @@ A failed socket call raises a `ProsperoException` whose `Code` carries the netwo
 can branch on a specific failure such as a refused connection or a timeout. The address helpers throw
 the usual argument exceptions instead — `SocketAddress.Parse` raises `FormatException` on a bad
 address, where `TryParse` returns false.
+
+## Beyond the wrappers
+
+The types above cover TCP, UDP, HTTP/HTTPS, name resolution and the download service. For anything
+outside that surface — HTTP/2, hosting a wireless access point so a phone can join the console, IPv6,
+per-socket detail, DNS-cache control, scatter/gather I/O, the HTTP client's cookie box and epoll
+multiplexer, or address-translation state — see [Network bindings](net.md), which walks the raw
+interop the wrappers here sit on.

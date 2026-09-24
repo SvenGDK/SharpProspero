@@ -110,6 +110,16 @@ public static class CompatEmitter
     /// lives in .data so the execute-only .text can reach it instruction-relative.</summary>
     private const string EnvTableSymbol = "__sp_env_table";
 
+    /// <summary>
+    /// The CPU cache writeback helper: <c>void __sp_write_back_cache_lines(void* ptr, size_t bytes)</c>.
+    /// Walks <c>[ptr, ptr + bytes)</c> in 64-byte cache-line steps, issuing <c>CLFLUSHOPT</c> for each
+    /// line and terminating with an <c>SFENCE</c>. The display scan-out engine and other DMA readers
+    /// see DRAM directly rather than through the CPU coherency domain, so a caller that produced
+    /// scan-out or DMA content on the CPU has to hand it to memory before the reader starts.
+    /// Emitted for application-module builds only; payload builds never define it.
+    /// </summary>
+    public const string WriteBackCacheLinesSymbol = "__sp_write_back_cache_lines";
+
     /// <summary>Builds the NUL-separated environment table that getenv walks. The entries configure
     /// the NativeAOT GC to a bounded heap that fits inside the hijacked host process's remaining
     /// flexible-memory budget. Without a hard limit the GC auto-computes a regions_range from
@@ -3040,6 +3050,45 @@ public static class CompatEmitter
         return new("getenv", false, code, relocs);
     }
 
+    // __sp_write_back_cache_lines(void* rdi, size_t rsi): write every dirty CPU cache line covering
+    // [rdi, rdi + rsi) back to memory and order the writebacks ahead of anything that follows.
+    //
+    // The display scan-out engine and other DMA readers see DRAM through the memory controller, not
+    // through the CPU coherency domain. Direct memory allocated with SCE_KERNEL_MTYPE_C or
+    // SCE_KERNEL_MTYPE_C_SHARED is cached, so pixel bytes a CPU renderer wrote sit in the L1/L2 lines
+    // of whichever core did the store until natural eviction. Handing the buffer to the display before
+    // those lines have retired scans out a mixture of the previous frame and only the lines that
+    // happened to be evicted, which reads as granular noise concentrated where the CPU wrote last.
+    // The whole point of this helper is to make the transition deterministic: it sweeps every line in
+    // the given range with CLFLUSHOPT and closes with SFENCE so that once it returns, every one of the
+    // stores it flushed is globally visible before the next store or the next call the caller makes.
+    //
+    // The base pointer is assumed 64-byte aligned. Direct-memory framebuffers are 2 MB aligned by
+    // DisplayDevice.Open, which satisfies that; a caller with a different alignment must round the
+    // base down first (a CLFLUSHOPT of an unwritten line is a no-op, so overshooting is safe).
+    //
+    // Emitted for application-module builds only. Payloads never draw scan-out buffers or otherwise
+    // hand cached memory to a hardware DMA engine, and the payload branch of BuildFunctions
+    // deliberately leaves this helper out so a payload build carries no unused synthetic symbol.
+    private static CompatFunc WriteBackCacheLines()
+    {
+        var a = new Asm();
+        // rdi = ptr, rsi = bytes. Walk rax = 0, 64, 128, ... until rax reaches rsi.
+        // sfence runs whether or not the loop iterated (matches the SDK sample's shape).
+        a.Emit(0x31, 0xC0);                                 // xor eax, eax
+        a.Mark("loop");
+        a.Emit(0x48, 0x39, 0xF0);                           // cmp rax, rsi
+        a.JumpIfAtOrAbove("fence");                         // 0F 83 rel32
+        a.Emit(0x66, 0x0F, 0xAE, 0x3C, 0x07);               // clflushopt [rdi + rax]
+        a.Emit(0x48, 0x83, 0xC0, 0x40);                     // add rax, 64
+        a.JumpIfAlways("loop");                             // E9 rel32
+        a.Mark("fence");
+        a.Emit(0x0F, 0xAE, 0xF8);                           // sfence
+        a.Emit(0xC3);                                       // ret
+        (byte[] code, (int Offset, string Target)[] relocs) = a.Build();
+        return new(WriteBackCacheLinesSymbol, false, code, relocs);
+    }
+
     /// <summary>The compat functions the link consumes. Every build shares the same set; the payload
     /// build swaps the three per-thread-storage bodies for pthread-key variants (see
     /// <see cref="BuildFunctions"/>) and appends the pthread_create wrapper plus its trampoline.</summary>
@@ -3279,7 +3328,16 @@ public static class CompatEmitter
     private static IReadOnlyList<CompatFunc> BuildFunctions(bool payload)
     {
         if (!payload)
-            return Functions;
+        {
+            // Application modules draw scan-out buffers on the CPU and hand them to the display engine;
+            // the __sp_write_back_cache_lines helper is the cache-writeback primitive DisplayDevice
+            // (and any other CPU renderer that submits its own flip) calls between the last store and
+            // the flip. Payload builds do not draw scan-out and never load this helper.
+            var appList = new List<CompatFunc>(Functions.Count + 1);
+            appList.AddRange(Functions);
+            appList.Add(WriteBackCacheLines());
+            return appList;
+        }
         // Substitute the three TLS bodies and the getenv zero-stub, then append the pthread-key
         // helpers plus the pthread_create wrapper and its trampoline. The names are what the linker
         // resolves against, so the swap is symmetric: the payload build sees exactly one definition

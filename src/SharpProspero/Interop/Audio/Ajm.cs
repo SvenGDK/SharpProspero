@@ -5,6 +5,61 @@ using System.Runtime.InteropServices;
 
 namespace SharpProspero.Interop.Audio;
 
+/// <summary>The kind of Original File Length metadata found in an MP3 bitstream.</summary>
+public enum SceAjmDecMp3OflType : uint
+{
+    /// <summary>No OFL data.</summary>
+    None = 0,
+    /// <summary>LAME OFL data.</summary>
+    Lame = 1,
+    /// <summary>VBRI header.</summary>
+    Vbri = 2,
+    /// <summary>Fraunhofer OFL.</summary>
+    Fgh = 3,
+    /// <summary>VBRI header followed by Fraunhofer OFL.</summary>
+    VbriAndFgh = 4,
+}
+
+/// <summary>ATRAC9 configuration information reported by <see cref="Ajm.sceAjmDecAt9ParseConfigData"/>.</summary>
+[StructLayout(LayoutKind.Sequential)]
+public struct SceAjmDecAt9ConfigDataInfo
+{
+    /// <summary>Number of channels in the frame.</summary>
+    public uint Channels;
+    /// <summary>Sample rate of the frame in hertz.</summary>
+    public uint SampleRate;
+    /// <summary>Number of samples per channel in a frame.</summary>
+    public uint FrameSamplesPerCh;
+    /// <summary>Number of samples per channel in a super-frame.</summary>
+    public uint SuperFrameSamplesPerCh;
+    /// <summary>Size in bytes of a super-frame.</summary>
+    public uint SuperFrameSize;
+}
+
+/// <summary>Information about an MP3 frame reported by <see cref="Ajm.sceAjmDecMp3ParseFrame"/>.</summary>
+[StructLayout(LayoutKind.Sequential)]
+public struct SceAjmDecMp3ParseFrame
+{
+    /// <summary>Size of the parsed frame in bytes.</summary>
+    public nuint FrameSize;
+    /// <summary>Number of channels in the frame.</summary>
+    public uint NumChannels;
+    /// <summary>Number of samples per channel in the frame.</summary>
+    public uint NumSamplesPerChannel;
+    /// <summary>Frame bitrate in bits per second.</summary>
+    public uint Bitrate;
+    /// <summary>Sample rate of the frame in hertz.</summary>
+    public uint SampleRate;
+    /// <summary>Encoder delay recorded in the OFL data, or zero when the OFL was not parsed.</summary>
+    public uint EncoderDelay;
+    /// <summary>Total number of frames recorded in the OFL data, or zero when the OFL was not parsed.</summary>
+    public uint NumFrames;
+    /// <summary>Total number of samples recorded in the OFL data, or zero when the OFL was not parsed.</summary>
+    public uint TotalSamples;
+    /// <summary>The kind of OFL data that was found.</summary>
+    public SceAjmDecMp3OflType OflType;
+}
+
 /// <summary>
 /// The audio job manager: batched decode and encode for Opus, AAC, MP3, ATRAC9 and the other codecs. Signatures from ajm.h.
 /// </summary>
@@ -140,4 +195,15 @@ public static unsafe partial class Ajm
     [LibraryImport(Lib)]
     public static partial int sceAjmBatchJobRunSplit(void* pInfo, uint uiInstance, ulong uiFlags, void* pDataInputBuffers, nuint szNumDataInputBuffers, void* pDataOutputBuffers, nuint szNumDataOutputBuffers, void* pSidebandOutput, nuint szSidebandOutputSize);
 
+    /// <summary>Parses an ATRAC9 configuration data blob and fills <paramref name="pConfigDataInfo"/> with the described stream shape.</summary>
+    [LibraryImport(Lib)]
+    public static partial int sceAjmDecAt9ParseConfigData(void* pConfigData, SceAjmDecAt9ConfigDataInfo* pConfigDataInfo);
+
+    /// <summary>Parses an MP3 frame and reports its shape; pass a non-zero <paramref name="iParseOfl"/> to also read Original File Length data from the ancillary bytes.</summary>
+    [LibraryImport(Lib)]
+    public static partial int sceAjmDecMp3ParseFrame(void* pBitstream, nuint szBitstream, int iParseOfl, SceAjmDecMp3ParseFrame* pFrameInfo);
+
+    /// <summary>Returns a static null-terminated text description of an AJM error code.</summary>
+    [LibraryImport(Lib)]
+    public static partial byte* sceAjmStrError(int iErrorCode);
 }

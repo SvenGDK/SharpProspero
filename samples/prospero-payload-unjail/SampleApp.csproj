@@ -19,6 +19,13 @@
     <ProjectReference Include="$(SharpProsperoRoot)\src\SharpProspero\SharpProspero.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <ProsperoSprx Include="libSceSystemService.sprx" />
+    <ProsperoSprx Include="libSceAppInstUtil.sprx" />
+    <DirectPInvoke Include="libSceSystemService" />
+    <DirectPInvoke Include="libSceAppInstUtil" />
+  </ItemGroup>
+
   <Import Project="$(SharpProsperoRoot)\build\Prospero.Payload.targets" />
 
 </Project>

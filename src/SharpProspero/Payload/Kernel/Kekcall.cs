@@ -50,10 +50,10 @@ public static unsafe partial class PayloadKekcall
     public const int ReadMsr = 3;
 
     /// <summary>Kekcall command number for the remote-syscall dispatcher: run
-    /// <paramref name="Arg2"/> as a syscall in the process identified by
-    /// <paramref name="Arg1"/> with the given argument tuple. Used to invoke
-    /// <c>SYS_mlock</c> in another process's context (e.g. SceShellCore) so pinned
-    /// pages survive the <c>phys_copyin</c> window.</summary>
+    /// <c>arg2</c> as a syscall in the process identified by <c>arg1</c> with the
+    /// given argument tuple. Used to invoke <c>SYS_mlock</c> in another process's
+    /// context (e.g. SceShellCore) so pinned pages survive the
+    /// <c>phys_copyin</c> window.</summary>
     public const int RemoteSyscall = 5;
 
     /// <summary>Kekcall command number for reading the shared-area observability

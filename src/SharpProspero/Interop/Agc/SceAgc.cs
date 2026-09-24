@@ -93,7 +93,7 @@ public static unsafe partial class SceAgc
     [LibraryImport(Lib)]
     public static partial uint* sceAgcAcbMemSemaphore(void* commandBuffer, void* gpuAddr, byte signalOp, byte mailbox, uint value);
 
-    /// <summary>Appends a pop-debug-marker packet closing the current annotation scope in the command buffer.</summary>
+    /// <summary>Appends a pop-debug-marker packet closing the current annotation region in the command buffer.</summary>
     [LibraryImport(Lib)]
     public static partial uint* sceAgcAcbPopMarker(void* commandBuffer);
 
@@ -105,7 +105,7 @@ public static unsafe partial class SceAgc
     [LibraryImport(Lib)]
     public static partial uint sceAgcAcbPrimeUtcl2GetSize();
 
-    /// <summary>Appends a push-debug-marker packet opening a named annotation scope in the command buffer.</summary>
+    /// <summary>Appends a push-debug-marker packet opening a named annotation region in the command buffer.</summary>
     [LibraryImport(Lib)]
     public static partial uint* sceAgcAcbPushMarker(void* commandBuffer, void* markerName, uint color);
 

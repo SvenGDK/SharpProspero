@@ -37,12 +37,17 @@ public sealed unsafe class DisplayDevice : IDisposable
     private readonly DirectMemoryRegion[] _staging;
     private readonly AgcSurfaceDescription _layout;
     private readonly int _stagingBytes;
+    // The scan-out buffer's tiled footprint, in bytes. The CPU-cache writeback pass before a flip
+    // walks this many bytes of the buffer, matching the byte range the display scan-out engine reads.
+    // Comes from AgcSurface.Compute at open time, so it agrees with what the buffers were allocated
+    // to hold.
+    private readonly nuint _scanoutBytes;
     private int _index;
     private long _frame;
     private bool _disposed;
 
     private DisplayDevice(int handle, int width, int height, DirectMemoryRegion[] regions,
-        DirectMemoryRegion[] staging, AgcSurfaceDescription layout, int stagingBytes)
+        DirectMemoryRegion[] staging, AgcSurfaceDescription layout, int stagingBytes, nuint scanoutBytes)
     {
         _handle = handle;
         Width = width;
@@ -51,6 +56,7 @@ public sealed unsafe class DisplayDevice : IDisposable
         _staging = staging;
         _layout = layout;
         _stagingBytes = stagingBytes;
+        _scanoutBytes = scanoutBytes;
     }
 
     /// <summary>How the scan-out buffers are laid out in memory.</summary>
@@ -145,8 +151,18 @@ public sealed unsafe class DisplayDevice : IDisposable
             for (int i = 0; i < bufferCount; i++)
             {
                 regions[i] = DirectMemoryRegion.Allocate(frameBytes, align);
+                // A tiled buffer holds more bytes than a plain width x height image because the last
+                // block-row is whole even when the visible rectangle does not fill it. The tile pass
+                // walks only the visible pixels, so the padding bytes stay whatever the memory pool
+                // handed the region. Zeroing the whole thing here settles them to a known value, so a
+                // partial hardware read that reaches into a padded byte gets a defined result instead
+                // of leftover pool content.
+                new Span<byte>(regions[i].Pointer, checked((int)regions[i].Size)).Clear();
                 if (tiled)
+                {
                     staging[i] = DirectMemoryRegion.Allocate((nuint)stagingBytes, Alignment);
+                    new Span<byte>(staging[i].Pointer, stagingBytes).Clear();
+                }
                 addresses[i] = default;
                 addresses[i].Data = regions[i].Pointer;
             }
@@ -191,7 +207,7 @@ public sealed unsafe class DisplayDevice : IDisposable
             throw;
         }
 
-        return new DisplayDevice(handle, width, height, regions, staging, desc, stagingBytes);
+        return new DisplayDevice(handle, width, height, regions, staging, desc, stagingBytes, (nuint)layout.TotalSizeBytes);
     }
 
     // The sizes the output takes: four named ones, and the widescreen ladder below 1080, which is any
@@ -201,24 +217,42 @@ public sealed unsafe class DisplayDevice : IDisposable
         || ((width % 32) == 0 && width is >= 1280 and <= 1888 && height == width / 32 * 18);
 
     /// <summary>
-    /// Presents <see cref="BackBuffer"/>, waits until it is actually on screen, and advances to the
-    /// next framebuffer. Returns the presented frame index.
+    /// Presents <see cref="BackBuffer"/> and advances to the next framebuffer. Returns the presented
+    /// frame index. The wait for a buffer to become free again is done at the start of the next
+    /// present, not at the end of this one, so the processor draws frame N + 1 while the output
+    /// scans out frame N.
     /// </summary>
     /// <remarks>
-    /// The wait is on the output's own account of which flip is showing, not on a vertical blank: a
-    /// blank happens whether or not a flip retired, so waiting one and moving on hands the next frame
-    /// to a buffer the output may still be reading. When the flip queue is full the submission is
-    /// retried rather than treated as a failure, which is what a full queue means.
+    /// The wait at the start of a present is on the output's own account of which flip is showing,
+    /// not on a vertical blank: a blank happens whether or not a flip retired, so waiting one and
+    /// moving on hands the next frame to a buffer the output may still be reading. When the flip
+    /// queue is full the submission is retried rather than treated as a failure, which is what a
+    /// full queue means.
     /// </remarks>
     /// <exception cref="ProsperoException">The flip could not be submitted.</exception>
     public long Present(VideoOutFlipMode mode = VideoOutFlipMode.VSync)
     {
+        // The buffer the next flip carries was last submitted for the flip _frame - _regions.Length,
+        // and the output is still scanning it out as long as that flip is what the compositor
+        // reports on screen. Wait until the compositor has moved past it — one flip later — so the
+        // tile pass cannot touch a buffer the output is still reading. Only from the
+        // _regions.Length'th frame onward is there an earlier flip to wait for at all; the first
+        // pass around every buffer starts unused, so the check gates the wait out then.
+        if (_frame >= _regions.Length)
+            WaitUntilOnScreen(_frame - _regions.Length + 1);
+
         RearrangeIfDrawnInRows();
+        // Direct memory is cached, so the CPU stores from user drawing (linear path) or from the tile
+        // pass above (tiled path) sit in L1/L2 until the lines evict naturally. The scan-out engine
+        // reads DRAM through the memory controller, not through the CPU coherency domain, so the flip
+        // must not run until those stores are in memory. Skipping the writeback shows the display a
+        // mixture of the previous frame's bytes and only the lines that happened to be evicted, which
+        // reads as granular noise concentrated where the CPU wrote last.
+        CpuCache.WriteBack(_regions[_index].Pointer, _scanoutBytes);
         int rc;
         while ((rc = VideoOut.sceVideoOutSubmitFlip(_handle, _index, (uint)mode, _frame)) == VideoOutFlipQueueFull)
             SceResult.ThrowIfFailed(VideoOut.sceVideoOutWaitVblank(_handle), nameof(VideoOut.sceVideoOutWaitVblank));
         SceResult.ThrowIfFailed(rc, nameof(VideoOut.sceVideoOutSubmitFlip));
-        WaitUntilOnScreen(_frame);
         long presented = _frame;
         _index = (_index + 1) % _regions.Length;
         _frame++;
@@ -272,6 +306,13 @@ public sealed unsafe class DisplayDevice : IDisposable
     /// caller that recorded the flip on the graphics timeline itself rather than through
     /// <see cref="Present"/>. Returns the presented frame index.
     /// </summary>
+    /// <remarks>
+    /// A frame drawn entirely on the graphics processor needs no CPU-side cache writeback: the flip
+    /// packet on the graphics timeline retires an end-of-pipe cache-invalidate first. A caller that
+    /// also touches the scan-out buffer from the CPU before its flip must call
+    /// <see cref="CpuCache.WriteBack"/> on the touched range itself, before the flip; this method
+    /// does not, because the CPU stores may have finished many frames ago.
+    /// </remarks>
     public long AdvanceFrame()
     {
         WaitUntilOnScreen(_frame);

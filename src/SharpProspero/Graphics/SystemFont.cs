@@ -54,9 +54,12 @@ public sealed unsafe class SystemFont : ScalableFont
     /// <inheritdoc/>
     private protected override void* OpenFont(void* library)
     {
-        // The library already supports the system fonts (set up before the open). A system font set is
-        // opened as a stream with no open-detail, the way the font engine expects its resident sets to
-        // be sourced.
+        // A system font set is opened as a file stream: the library's system-font support keeps
+        // the file paths for every resident set and the engine's own sample uses the same mode.
+        // The engine derives those paths from a sandbox salt at library-init time, so the caller
+        // must open the font BEFORE any file-view widening drops the sandbox mount namespace -
+        // without the salt the engine's path buffer stays empty and every mode of this call
+        // answers with a generic parameter error.
         void* handle;
         SceResult.ThrowIfFailed(
             SceFont.sceFontOpenFontSet(library, _fontSet, SceFontOpenMode.FileStream, null, &handle),

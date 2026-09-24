@@ -64,14 +64,14 @@ public static class StubCatalog
         new Entry("libSceJpegEnc", JpegEnc),
         new Entry("libSceAudioIn", AudioIn),
         // The decoder publishes its library under the plain name but the loader loads the file with
-        // the dotted one; ten launching titles record exactly this pairing.
+        // the dotted one.
         new Entry("libSceAudiodec", Audiodec, Soname: "libSceAudiodec.native.prx"),
         new Entry("libSceM4aacEnc", M4aacEnc),
         new Entry("libSceAt9Enc", At9Enc),
         new Entry("libSceNgs2", Ngs2),
         new Entry("libSceAudio3d", Audio3d),
+        new Entry("libSceAudioPropagation", AudioPropagation),
         // Named the same way as the decoder: library and module libSceAjm, file libSceAjm.native.prx.
-        // Fifty-five launching titles record this pairing.
         new Entry("libSceAjm", Ajm, Soname: "libSceAjm.native.prx"),
         // The module publishes these under a library whose name is not the module's, and the file it
         // lives in is not named after the module either. Naming the module as the library asked the
@@ -87,9 +87,14 @@ public static class StubCatalog
         // Published by the bus module, under a library of its own rather than the bus library.
         new Entry("libSceDeviceService", DeviceService, ModuleName: "libSceMbus", Soname: "libSceMbus.prx"),
         new Entry("libSceVideodec2", Videodec2),
+        new Entry("libSceVdecsw", Vdecsw),
         new Entry("libSceRtc", Rtc),
         new Entry("libSceRandom", Random),
         new Entry("libSceZlib", Zlib),
+        // PFS memory-to-memory decompression. The module travels with the application in the sce_module
+        // folder rather than being published by the system, so the loader picks it up out of that
+        // folder when the application names it.
+        new Entry("libScePfs", Pfs),
         new Entry("libSceNet", Net),
         // This library publishes module version 2.1.
         new Entry("libSceSsl", Ssl, ModuleVersion: 0x0201),
@@ -103,9 +108,14 @@ public static class StubCatalog
         // This library publishes module version 1.0, like the media player and content search.
         new Entry("libScePlayGo", PlayGo, ModuleVersion: 0x0100),
         // The module publishes a library under a shorter name than its own: library libSceAppContent,
-        // module libSceAppContentUtil, file libSceAppContent.prx. Sixty-six launching titles agree.
+        // module libSceAppContentUtil, file libSceAppContent.prx.
         new Entry("libSceAppContent", AppContent, ModuleName: "libSceAppContentUtil"),
         new Entry("libSceNetCtl", NetCtl),
+        // Access-point control lives in the same module file as the network-status library, published
+        // under a library of its own: the file the loader loads is the network-status one and the
+        // library the caller binds to is this one.
+        new Entry("libSceNetCtlAp", NetCtlAp, ModuleName: "libSceNetCtl", Soname: "libSceNetCtl.prx"),
+        new Entry("libSceNetCtlApDialog", NetCtlApDialog),
         // The save-data module names its file with a dot but its module and library with an
         // underscore, so the file name is given explicitly and the two names default from the library.
         new Entry("libSceSaveData_native", SaveData, Soname: "libSceSaveData.native.prx"),
@@ -122,9 +132,18 @@ public static class StubCatalog
         // libSceSaveDataDialog, file libSceSaveDataDialog.native.prx.
         new Entry("libSceSaveDataDialog.native", SaveDataDialog, ModuleName: "libSceSaveDataDialog"),
         new Entry("libSceWebBrowserDialog", WebBrowserDialog),
-        // This library publishes module version 1.0, the one module in this set that does not use 1.1.
-        // This library publishes module version 1.0, the one module in this set that does not use 1.1,
-        // and the loader loads the dotted file. Thirty-three launching titles record this pairing.
+        // The sign-in and login dialogs the shell brings up when the running application requests one.
+        // Both live in their own module files and publish their libraries under the plain name.
+        new Entry("libSceLoginDialog", LoginDialog),
+        new Entry("libSceSigninDialog", SigninDialog),
+        // The download-progress dialog the installer surface brings up so an application can show the
+        // user the state of a play-go request without having to draw the progress itself.
+        new Entry("libScePlayGoDialog", PlayGoDialog),
+        // The party-invitation dialog and the player-selection dialog, each in a module of its own.
+        new Entry("libScePlayerInvitationDialog", PlayerInvitationDialog),
+        new Entry("libScePlayerSelectionDialog", PlayerSelectionDialog),
+        // This library publishes module version 1.0, the one module in this set that does not use
+        // 1.1, and the loader loads the dotted file.
         new Entry("libSceAvPlayer", AvPlayer, ModuleVersion: 0x0100, Soname: "libSceAvPlayer.native.prx"),
         // The font engine calls its library and its module the same thing and its file something else.
         // Both font files carry a name that is not the library's, and each module says so itself: the
@@ -143,6 +162,8 @@ public static class StubCatalog
         // A fourth library out of the kernel module, alongside the kernel's own, the POSIX one and the
         // console identifier.
         new Entry("libSceCoredump", Coredump, ModuleName: "libkernel", Soname: "libkernel.prx"),
+        new Entry("libSceRazorCpu", RazorCpu),
+        new Entry("libSceRazorCpu_debug", RazorCpuDebug),
         new Entry("libSceAgc", Agc),
         new Entry("libSceAgcDriver", AgcDriver),
         new Entry("libSceShellCoreUtil", ShellCoreUtil,
@@ -158,7 +179,7 @@ public static class StubCatalog
     /// installer and USB storage). They are not linked, so they are kept out of <see cref="Core"/> and
     /// the linker never generates a stub for them; the offsets tool matches a supplied module against
     /// them as well, so a contributor can read a run-time service's coverage on a firmware. The names
-    /// here are the ones the run-time wrappers resolve, kept in step with the SDK's own registry.
+    /// here are the ones the run-time wrappers resolve.
     /// </summary>
     public static IReadOnlyList<Entry> RuntimeResolved =>
     [
@@ -182,6 +203,12 @@ public static class StubCatalog
     // and thread-local primitives the platform layer forwards to.
     private static readonly string[] Kernel =
     [
+        // The runtime-support library the AOT link brings in carries a reference to the plain
+        // process-end syscall wrapper. The application itself does not call it - the shell ends
+        // through the thread-exit primitive because the platform's per-process syscall filter
+        // rejects the process-end call - but the stub is kept in the allowlist so the link
+        // resolves the runtime library's own reference.
+        "_exit",
         "__error", "__stack_chk_fail", "__tls_get_addr", "sceKernelAllocateDirectMemory",
         // Three the console publishes that the link-time archives leave out. They are here because the
         // console is what an application binds against; without them the calls that read the system
@@ -266,6 +293,67 @@ public static class StubCatalog
         // these. The wrappers do not expose the process filter, so an application that needs it
         // has to ask by name.
         "kqueue", "kevent",
+        // Cancellation, timed waits and the finer pieces of the pthread surface the runtime
+        // reaches beyond the base set above.
+        "scePthreadCancel",
+        "scePthreadSetcancelstate", "scePthreadSetcanceltype", "scePthreadTestcancel",
+        "scePthreadCondSignalto", "scePthreadCondTimedwait",
+        "scePthreadMutexTimedlock",
+        "scePthreadGetname",
+        "scePthreadOnce",
+        // Mutex attributes the standard set above does not cover: the priority ceiling
+        // and the protocol a mutex enforces, both read and written by name.
+        "scePthreadMutexattrGetprioceiling", "scePthreadMutexattrSetprioceiling",
+        "scePthreadMutexattrGetprotocol", "scePthreadMutexattrSetprotocol",
+        "scePthreadMutexattrGettype",
+        // Read-write locks: the object, its attributes and every wait form the runtime
+        // reaches when it holds one for readers while a writer waits.
+        "scePthreadRwlockInit", "scePthreadRwlockDestroy",
+        "scePthreadRwlockRdlock", "scePthreadRwlockTryrdlock", "scePthreadRwlockTimedrdlock",
+        "scePthreadRwlockWrlock", "scePthreadRwlockTrywrlock", "scePthreadRwlockTimedwrlock",
+        "scePthreadRwlockUnlock",
+        "scePthreadRwlockattrInit", "scePthreadRwlockattrDestroy",
+        "scePthreadRwlockattrGettype", "scePthreadRwlockattrSettype",
+        // Counting semaphores under the pthread umbrella (a second name for the same object
+        // as the platform-level counting semaphores the event queue holds).
+        "scePthreadSemInit", "scePthreadSemDestroy",
+        "scePthreadSemWait", "scePthreadSemTrywait", "scePthreadSemTimedwait",
+        "scePthreadSemPost", "scePthreadSemGetvalue",
+        // Asynchronous IO: the request-object surface a caller uses to submit reads and
+        // writes and to wait, poll, cancel and clean up their outcomes. The pair of impl
+        // and param initializers is what the compat crt reaches when a build asks for the
+        // library's own initialization rather than the runtime's.
+        "sceKernelAioInitializeImpl", "sceKernelAioInitializeParam", "sceKernelAioSetParam",
+        "sceKernelAioSubmitReadCommands", "sceKernelAioSubmitReadCommandsMultiple",
+        "sceKernelAioSubmitWriteCommands", "sceKernelAioSubmitWriteCommandsMultiple",
+        "sceKernelAioWaitRequests", "sceKernelAioWaitRequest",
+        "sceKernelAioPollRequests", "sceKernelAioPollRequest",
+        "sceKernelAioCancelRequests", "sceKernelAioCancelRequest",
+        "sceKernelAioDeleteRequests", "sceKernelAioDeleteRequest",
+        // Descriptor and vector IO the runtime reaches through the kernel names rather than
+        // the POSIX ones, plus mode and truncation calls a build takes from libkernel.
+        "sceKernelFcntl", "sceKernelStat", "sceKernelChmod",
+        "sceKernelFsync", "sceKernelFtruncate",
+        "sceKernelReadv", "sceKernelWritev",
+        "sceKernelPreadv", "sceKernelPwritev",
+        // Light-weight file system: a fast path a caller uses when it holds a raw block
+        // list for a file on a raw device rather than going through the ordinary IO path.
+        "sceKernelLwfsSetAttribute", "sceKernelLwfsAllocateBlock", "sceKernelLwfsTrimBlock",
+        "sceKernelLwfsLseek", "sceKernelLwfsWrite",
+        // Coarse timing under the kernel library's own name (the second-scale complement to
+        // the usleep and nanosleep pair already listed above).
+        "sceKernelSleep",
+        // Direct memory: the second allocator form the runtime reaches when it holds the
+        // wider parameter block, and the two-region reservation a caller uses to place two
+        // allocations side by side, plus the memory-pool aperture used by builds that map
+        // their own pool.
+        "sceKernelAllocateDirectMemory2",
+        "sceKernelGetPrtAperture",
+        // Applying many mmap operations at once.
+        "sceKernelBatchMap", "sceKernelBatchMap2",
+          // General-purpose IO pins the console exposes for development boards, reached by a
+        // build that has been granted access to them.
+        "sceKernelSetGPO", "sceKernelGetGPI",
     ];
 
     // The portable operating-system interface the platform layer forwards to. These are published
@@ -278,7 +366,7 @@ public static class StubCatalog
         // module links against directly.
         "socket", "bind", "listen", "accept", "connect", "send", "recv", "setsockopt", "shutdown",
         "fcntl", "flock", "fstat", "fsync",
-        "ftruncate", "getdents", "getpid", "getsockopt", "gettimeofday",
+        "ftruncate", "getdents", "getpid", "getsockopt", "gettimeofday", "kill",
         "lseek", "madvise", "mkdir", "mlock",
         "mprotect", "msync", "munlock", "munmap",
         "nanosleep", "open", "pread", "preadv",
@@ -305,7 +393,11 @@ public static class StubCatalog
         // Naming a thread. The compat object forwards to this one rather than to the kernel library's
         // own, because this one answers a plain error number and the other wraps it into a code.
         "pthread_rename_np",
-        "sysctl", "getmntinfo", "ptrace", "wait4", "waitpid", "getuid", "geteuid",
+        "sysctl", "getmntinfo", "nmount", "unmount", "ptrace", "wait4", "waitpid", "getuid", "geteuid",
+        // The runtime-support library reaches these through the file/process helpers it ships with;
+        // adding them here lets the link resolve them the same way every other POSIX call does.
+        "getcwd", "getgroups", "setgroups", "getpriority", "setpriority", "getsid", "setuid", "execve",
+        "syslog",
     ];
 
     // C runtime: the allocation, memory, string, control, formatting, and unwind functions the
@@ -380,6 +472,11 @@ public static class StubCatalog
         "sceVideoOutDeletePreVblankStartEvent",
         "sceVideoOutConfigureOutput",
         "sceVideoOutIsOutputSupported",
+        // The system-caller vblank subscription used by processes with the system-side permission
+        // for it. Applications that do not carry the permission reach for it only when the
+        // toolchain resolves the same handle they hold for the ordinary entry, so the name is
+        // published here alongside its sibling to keep a link against either resolve.
+        "sceVideoOutSysAddVblankEvent",
     ];
 
     private static readonly string[] Pad =
@@ -452,6 +549,21 @@ public static class StubCatalog
         "sceLncUtilLaunchApp",
         "sceSystemServiceGetAppStatus",
         "sceSystemServiceAddLocalProcess",
+        // The background music player: mute the system's own player while the application
+        // has audio focus, and re-enable it once the application is done.
+        "sceSystemServiceDisableMusicPlayer",
+        "sceSystemServiceReenableMusicPlayer",
+        // HDR tone-mapping: the peak luminance the display is running at, in nits.
+        "sceSystemServiceGetHdrToneMapLuminance",
+        // The system's initial-notice skip flag, which suppresses the notice screens the
+        // system would otherwise show on the next launch.
+        "sceSystemServiceGetNoticeScreenSkipFlag",
+        "sceSystemServiceSetNoticeScreenSkipFlag",
+        "sceSystemServiceDisableNoticeScreenSkipFlagAutoSet",
+        // The playing-together dialog: the parameter block the launcher fills in and the
+        // call that brings the dialog up.
+        "sceSystemServiceInitializePlayerDialogParam",
+        "sceSystemServiceLaunchPlayerDialog",
     ];
 
     private static readonly string[] AudioOut =
@@ -465,6 +577,17 @@ public static class StubCatalog
         // What a port will say about itself: where its samples are going, and how far the output has got.
         "sceAudioOutGetPortState",
         "sceAudioOutGetLastOutputTime",
+        // What the audio subsystem itself is doing (headset attach, TV output, chat routing).
+        "sceAudioOutGetSystemState",
+        // The mix level between the controller speaker and the main output when a port is routed
+        // to both, in units the controller and the main mix agree on.
+        "sceAudioOutSetMixLevelPadSpk",
+        // The mastering suite (a system-wide limiter and dynamics processor an application can
+        // configure and read back). The four calls open, configure, report, and shut down.
+        "sceAudioOutMasteringInit",
+        "sceAudioOutMasteringSetParam",
+        "sceAudioOutMasteringGetState",
+        "sceAudioOutMasteringTerm",
     ];
 
     // The object-based output path: ports placed in space rather than fed to fixed channels.
@@ -499,6 +622,19 @@ public static class StubCatalog
         "sceAudioOut2MasteringTerm",
         "sceAudioOut2MasteringSetParam",
         "sceAudioOut2MasteringGetState",
+        "sceAudioOut2LoInit",
+        "sceAudioOut2LoTerminate",
+        "sceAudioOut2LoContextQueryMemory",
+        "sceAudioOut2LoContextCreate",
+        "sceAudioOut2LoContextDestroy",
+        "sceAudioOut2LoContextSetAttributes",
+        "sceAudioOut2LoContextAdvance",
+        "sceAudioOut2LoContextPush",
+        "sceAudioOut2LoContextGetQueueLevel",
+        "sceAudioOut2LoPortCreate",
+        "sceAudioOut2LoPortDestroy",
+        "sceAudioOut2LoPortSetAttributes",
+        "sceAudioOut2LoPortGetState",
     ];
 
     private static readonly string[] Sysmodule =
@@ -704,6 +840,18 @@ public static class StubCatalog
         "sceAudioInInput",
         "sceAudioInGetSilentState",
         "sceAudioInClose",
+        // The non-blocking form of an open, used when a caller starts capture on one thread and
+        // hands the port off to another once it is ready.
+        "sceAudioInAsyncOpen",
+        // The high-quality open path: the same capture but with the wider sample-rate and
+        // bit-depth range the microphone hardware supports.
+        "sceAudioInHqOpen",
+        // The gain a port is running at (a linear multiplier the mixer applied before samples
+        // reached the buffer).
+        "sceAudioInGetGain",
+        // The number of times the port has been routed to a different device since it was opened
+        // (a headset unplug counts as one).
+        "sceAudioInGetRerouteCount",
     ];
 
     private static readonly string[] Audiodec =
@@ -825,6 +973,43 @@ public static class StubCatalog
         "sceAudio3dPortCreate",
         "sceAudio3dPortDestroy",
         "sceAudio3dPortFlush",
+        // The default open parameters a caller reads before amending the ones it cares about
+        // and passing the block back to a port open.
+        "sceAudio3dGetDefaultOpenParameters",
+        // The state a port reports (opened, running, or an error the port has moved into).
+        "sceAudio3dPortGetStatus",
+        // A short description of one of the library's error codes, for a caller that prints it.
+        "sceAudio3dStrError",
+    ];
+
+    // Environmental audio: rays cast into the scene, portals connecting rooms, and paths a source's
+    // sound takes to the listener with reflections and occlusion applied.
+    private static readonly string[] AudioPropagation =
+    [
+        "sceAudioPropagationSystemQueryMemory",
+        "sceAudioPropagationSystemCreate",
+        "sceAudioPropagationSystemDestroy",
+        "sceAudioPropagationSystemGetRays",
+        "sceAudioPropagationSystemSetRays",
+        "sceAudioPropagationSystemSetAttributes",
+        "sceAudioPropagationSourceRender",
+        "sceAudioPropagationSourceCreate",
+        "sceAudioPropagationResetAttributes",
+        "sceAudioPropagationSourceDestroy",
+        "sceAudioPropagationSourceSetAttributes",
+        "sceAudioPropagationSourceGetRays",
+        "sceAudioPropagationSourceCalculateAudioPaths",
+        "sceAudioPropagationSourceGetAudioPathCount",
+        "sceAudioPropagationSourceGetAudioPath",
+        "sceAudioPropagationSourceSetAudioPath",
+        "sceAudioPropagationPathGetNumPoints",
+        "sceAudioPropagationSystemRegisterMaterial",
+        "sceAudioPropagationSystemUnregisterMaterial",
+        "sceAudioPropagationPortalCreate",
+        "sceAudioPropagationPortalDestroy",
+        "sceAudioPropagationPortalSetAttributes",
+        "sceAudioPropagationRoomCreate",
+        "sceAudioPropagationRoomDestroy",
     ];
 
     private static readonly string[] Ajm =
@@ -861,12 +1046,21 @@ public static class StubCatalog
         "sceAjmBatchJobControl",
         "sceAjmBatchJobRun",
         "sceAjmBatchJobRunSplit",
+        // ATRAC9 configuration parsing: the caller hands over the compact configuration bytes
+        // an ATRAC9 stream begins with and gets back the sample rate, channel count and frame size.
+        "sceAjmDecAt9ParseConfigData",
+        // MP3 frame parsing: the caller hands over a bitstream chunk and gets back the layout of
+        // the first complete frame, so it can size buffers and set gapless boundaries.
+        "sceAjmDecMp3ParseFrame",
+        // A short description of one of the library's error codes, for a caller that prints it.
+        "sceAjmStrError",
     ];
 
     private static readonly string[] VideoRecording =
     [
         "sceVideoRecordingGetStatus",
         "sceVideoRecordingQueryMemSize",
+        "_sceVideoRecordingQueryParam",
         "sceVideoRecordingOpen",
         "sceVideoRecordingStart",
         "sceVideoRecordingStop",
@@ -925,6 +1119,37 @@ public static class StubCatalog
         "sceVideodec2Decode",
         "sceVideodec2Flush",
         "sceVideodec2Reset",
+        // The per-picture info a caller reads back for a decoded frame: a codec-agnostic view and the
+        // three codec-specific views (AVC/H.264, HEVC/H.265, VP9) the module writes out.
+        "sceVideodec2GetPictureInfo",
+        "sceVideodec2GetAvcPictureInfo",
+        "sceVideodec2GetHevcPictureInfo",
+        "sceVideodec2GetVp9PictureInfo",
+    ];
+
+    // Compressed video decoding on a compute queue: the caller reserves memory for a queue and a
+    // decoder, drives access units in on the input side and picture buffers on the output side, and
+    // reads back the codec-specific per-picture information for each decoded frame.
+    private static readonly string[] Vdecsw =
+    [
+        "sceVdecswQueryComputeMemoryInfo",
+        "sceVdecswAllocateComputeQueue",
+        "sceVdecswReleaseComputeQueue",
+        "sceVdecswQueryDecoderMemoryInfo",
+        "sceVdecswCreateDecoder",
+        "sceVdecswDeleteDecoder",
+        "sceVdecswResetDecoder",
+        "sceVdecswSetDecodeInput",
+        "sceVdecswSyncDecodeInput",
+        "sceVdecswTrySyncDecodeInput",
+        "sceVdecswSetDecodeOutput",
+        "sceVdecswSyncDecodeOutput",
+        "sceVdecswTrySyncDecodeOutput",
+        "sceVdecswFinalizeDecodeSequence",
+        "sceVdecswGetPictureInfo",
+        "sceVdecswGetAvcPictureInfo",
+        "sceVdecswGetHevcPictureInfo",
+        "sceVdecswGetVp9PictureInfo",
     ];
 
     private static readonly string[] Rtc =
@@ -938,6 +1163,35 @@ public static class StubCatalog
         "sceRtcConvertLocalTimeToUtc",
         "sceRtcSetTick",
         "sceRtcGetTick",
+        // Calendar predicates and lookups.
+        "sceRtcIsLeapYear",
+        "sceRtcGetDaysInMonth",
+        "sceRtcGetDayOfWeek",
+        "sceRtcCheckValid",
+        // Interchange with POSIX time_t, MS-DOS packed date/time, and Win32 FILETIME.
+        "sceRtcSetTime_t",
+        "sceRtcGetTime_t",
+        "sceRtcSetDosTime",
+        "sceRtcGetDosTime",
+        "sceRtcSetWin32FileTime",
+        "sceRtcGetWin32FileTime",
+        // Tick arithmetic across every calendar unit the module offers.
+        "sceRtcTickAddTicks",
+        "sceRtcTickAddMicroseconds",
+        "sceRtcTickAddSeconds",
+        "sceRtcTickAddMinutes",
+        "sceRtcTickAddHours",
+        "sceRtcTickAddDays",
+        "sceRtcTickAddWeeks",
+        "sceRtcTickAddMonths",
+        "sceRtcTickAddYears",
+        // Formatting and parsing to RFC 2822 and RFC 3339 (ISO 8601) date/time strings.
+        "sceRtcFormatRFC2822",
+        "sceRtcFormatRFC2822LocalTime",
+        "sceRtcFormatRFC3339",
+        "sceRtcFormatRFC3339LocalTime",
+        "sceRtcParseDateTime",
+        "sceRtcParseRFC3339",
     ];
 
     private static readonly string[] Random =
@@ -965,6 +1219,13 @@ public static class StubCatalog
         "sceSaveDataSaveIcon",
         "sceSaveDataSaveIconByPath",
         "sceSaveDataSetParam",
+        // Transferring mount, the save-data memory (quick-save) family, and the event readout.
+        "sceSaveDataTransferringMount",
+        "sceSaveDataSyncSaveDataMemory",
+        "sceSaveDataSetupSaveDataMemory2",
+        "sceSaveDataGetSaveDataMemory2",
+        "sceSaveDataSetSaveDataMemory2",
+        "sceSaveDataGetEventResult",
     ];
 
     // Install and download progress.
@@ -983,12 +1244,15 @@ public static class StubCatalog
     [
         "sceAppContentInitialize",
         "sceAppContentAppParamGetInt",
+        "sceAppContentAppParamGetString",
         "sceAppContentAddcontEnqueueDownload",
         "sceAppContentAddcontMount",
         "sceAppContentAddcontUnmount",
         "sceAppContentDownloadDataFormat",
         "sceAppContentDownloadDataGetAvailableSpaceKb",
         "sceAppContentGetAddcontDownloadProgress",
+        "sceAppContentGetAddcontInfo",
+        "sceAppContentGetAddcontInfoList",
         "sceAppContentTemporaryDataFormat",
         "sceAppContentTemporaryDataGetAvailableSpaceKb",
         "sceAppContentTemporaryDataMount2",
@@ -1039,6 +1303,7 @@ public static class StubCatalog
     // calls, the poller, and the name resolver.
     private static readonly string[] Net =
     [
+        "sceNetInit",
         "sceNetPoolCreate",
         "sceNetPoolDestroy",
         "sceNetSocket",
@@ -1067,6 +1332,43 @@ public static class StubCatalog
         "sceNetResolverStartNtoa",
         "sceNetResolverDestroy",
         "sceNetInit",
+        // Scatter-gather send and receive on a socket, used by a caller that hands over
+        // several buffers in one call rather than concatenating first.
+        "sceNetSendmsg",
+        "sceNetRecvmsg",
+        // Reading what a socket is: local and remote endpoints, protocol state and the
+        // reason for a closed peer, in one call each for IPv4 and IPv6.
+        "sceNetGetSockInfo",
+        "sceNetGetSockInfo6",
+        // Reading and writing an Ethernet address as text and getting the address of the
+        // primary network interface.
+        "sceNetEtherStrton",
+        "sceNetEtherNtostr",
+        "sceNetGetMacAddress",
+        // IP address text and byte order helpers: read and write addresses as text, and
+        // swap 16- and 32-bit words between host and network order.
+        "sceNetInetNtop",
+        "sceNetInetPton",
+        "sceNetHtonl",
+        "sceNetHtons",
+        "sceNetNtohl",
+        "sceNetNtohs",
+        // DNS overrides a caller supplies, and clearing the cache when a caller needs the
+        // next lookup to be fresh.
+        "sceNetSetDnsInfo",
+        "sceNetClearDnsCache",
+        // Byte and packet counters an interface reports, and memory-pool accounting for the
+        // library's own use of the pool it was initialized with.
+        "sceNetGetInterfaceStats",
+        "sceNetGetMemoryPoolStats",
+        // Reverse and IPv6 name resolution plus the ways to cancel one, read its error and
+        // ask a resolver to attach itself to a specific interface.
+        "sceNetResolverStartAton",
+        "sceNetResolverStartNtoa6",
+        "sceNetResolverStartAton6",
+        "sceNetResolverGetError",
+        "sceNetResolverAbort",
+        "sceNetResolverConnect",
     ];
 
     // The TLS context the HTTP service uses.
@@ -1091,6 +1393,28 @@ public static class StubCatalog
         "sceSslSetVerifyCallback",
         "sceSslUnloadCert",
         "sceSslWrite",
+        // Memory pool accounting for a caller that watches the library's own use of the
+        // pool it was initialized with.
+        "sceSslGetMemoryPoolStats",
+        // Certificate authority list a caller reads back and later frees.
+        "sceSslGetCaList",
+        "sceSslFreeCaList",
+        "sceSslGetCaCerts",
+        "sceSslFreeCaCerts",
+        // Certificate name fields a caller pulls out of a peer certificate the verify
+        // callback has been handed. The pair of frees below matches the pair of getters
+        // that allocate a name block.
+        "sceSslGetSubjectName",
+        "sceSslGetIssuerName",
+        "sceSslGetNameEntryCount",
+        "sceSslGetNameEntryInfo",
+        "sceSslFreeSslCertName",
+        // The validity window the peer certificate carries and its fingerprint and serial,
+        // used for pinning and reporting.
+        "sceSslGetNotBefore",
+        "sceSslGetNotAfter",
+        "sceSslGetFingerprint",
+        "sceSslGetSerialNumber",
     ];
 
     // HTTP downloads.
@@ -1137,8 +1461,39 @@ public static class StubCatalog
         "sceHttpsEnableOption",
         "sceHttpsGetSslError",
         "sceHttpsLoadCert",
+        "sceHttpsSetSslCallback",
         "sceHttpsSetSslVersion",
         "sceHttpsUnloadCert",
+        // Memory pool accounting for a caller that watches the library's own use of the pool
+        // it was initialized with.
+        "sceHttpGetMemoryPoolStats",
+        // Connection and request handles a caller builds when it holds host/port fields
+        // separately rather than through the URL-based counterparts.
+        "sceHttpCreateConnection",
+        "sceHttpCreateRequest",
+        "sceHttpCreateRequest2",
+        // Authentication cache: reading the current setting, and clearing the cache when a
+        // caller needs future requests to prompt again.
+        "sceHttpGetAuthEnabled",
+        "sceHttpAuthCacheFlush",
+        // Redirect cache: force a lookup on the next request instead of using the last
+        // recorded redirect.
+        "sceHttpRedirectCacheFlush",
+        // Cookie jar: settings, direct read and write, import and export of stored cookies,
+        // clearing the store, and reporting on its use.
+        "sceHttpGetCookieEnabled",
+        "sceHttpGetCookie",
+        "sceHttpAddCookie",
+        "sceHttpCookieExport",
+        "sceHttpCookieImport",
+        "sceHttpCookieFlush",
+        "sceHttpGetCookieStats",
+        // The epoll-style multiplexer built into the HTTP library: create, tear down, read
+        // the current descriptor and cancel a wait on it.
+        "sceHttpCreateEpoll",
+        "sceHttpDestroyEpoll",
+        "sceHttpGetEpoll",
+        "sceHttpAbortWaitRequest",
     ];
 
     // HTTP/2 client. Used by the http2_get template for HTTP/2 requests.
@@ -1148,6 +1503,48 @@ public static class StubCatalog
         "sceHttp2CreateTemplate", "sceHttp2DeleteTemplate",
         "sceHttp2CreateRequestWithURL", "sceHttp2DeleteRequest",
         "sceHttp2SendRequest", "sceHttp2GetStatusCode", "sceHttp2ReadData",
+        // Aborting an in-flight request from another thread and reading how much of the
+        // response body the caller has received so far.
+        "sceHttp2AbortRequest",
+        "sceHttp2GetResponseContentLength",
+        "sceHttp2SetRequestContentLength",
+        // Request headers: add, remove, and read back the full set the response returned.
+        "sceHttp2AddRequestHeader",
+        "sceHttp2RemoveRequestHeader",
+        "sceHttp2GetAllResponseHeaders",
+        // Timeouts and payload settings a caller applies before sending.
+        "sceHttp2SetConnectTimeOut",
+        "sceHttp2SetInflateGZIPEnabled",
+        // The authentication cache: enabling authentication, wiring a callback that supplies
+        // credentials on demand, and clearing what has already been cached.
+        "sceHttp2SetAuthEnabled",
+        "sceHttp2SetAuthInfoCallback",
+        "sceHttp2AuthCacheFlush",
+        // The redirect cache: a callback the caller uses to inspect or block redirects, and
+        // a way to clear the last-seen redirect record.
+        "sceHttp2SetRedirectCallback",
+        "sceHttp2RedirectCacheFlush",
+        // Cookie boxes: separate cookie jars a caller can create, use for a group of
+        // requests and destroy independently of the shared jar.
+        "sceHttp2CreateCookieBox",
+        "sceHttp2DeleteCookieBox",
+        // Cookie jar: reading and writing entries, importing and exporting the store,
+        // clearing it, and reporting on its use. The two callbacks let a caller inspect
+        // cookies as they flow past.
+        "sceHttp2AddCookie",
+        "sceHttp2GetCookie",
+        "sceHttp2CookieImport",
+        "sceHttp2CookieExport",
+        "sceHttp2CookieFlush",
+        "sceHttp2GetCookieStats",
+        "sceHttp2SetCookieMaxNum",
+        "sceHttp2SetCookieMaxNumPerDomain",
+        "sceHttp2SetCookieMaxSize",
+        "sceHttp2SetCookieRecvCallback",
+        "sceHttp2SetCookieSendCallback",
+        // Memory pool accounting for a caller that watches the library's own use of the
+        // pool it was initialized with.
+        "sceHttp2GetMemoryPoolStats",
     ];
 
     // Hardware information from the kernel system-level interface.
@@ -1172,6 +1569,17 @@ public static class StubCatalog
         "sceZlibGetResult",
     ];
 
+    // PFS memory-to-memory decompression: size a workspace, validate a PFS buffer, read the
+    // uncompressed byte count, and read a range of the uncompressed view directly out of a PFS
+    // buffer held in memory.
+    private static readonly string[] Pfs =
+    [
+        "scePfsGetWorkBufferSize",
+        "scePfsValidate",
+        "scePfsGetUncompressedSize",
+        "scePfsPread",
+    ];
+
     // Network connection status.
     private static readonly string[] NetCtl =
     [
@@ -1179,6 +1587,51 @@ public static class StubCatalog
         "sceNetCtlTerm",
         "sceNetCtlGetState",
         "sceNetCtlGetInfo",
+        // Callbacks: register a callback the service invokes when the state changes,
+        // unregister one, and drain any pending state events from the current thread.
+        "sceNetCtlRegisterCallback",
+        "sceNetCtlUnregisterCallback",
+        "sceNetCtlCheckCallback",
+        // The result the service records after a connection attempt closes.
+        "sceNetCtlGetResult",
+        // The IPv6 counterparts of the state, info and result reads.
+        "sceNetCtlGetStateV6",
+        "sceNetCtlGetInfoV6",
+        "sceNetCtlGetResultV6",
+        // Interface counters and the NAT type the network is presenting.
+        "sceNetCtlGetIfStat",
+        "sceNetCtlGetNatInfo",
+    ];
+
+    // The access-point dialog the network module brings up when the connection needs a user
+    // choice.
+    private static readonly string[] NetCtlApDialog =
+    [
+        "sceNetCtlApDialogInitialize",
+        "sceNetCtlApDialogTerminate",
+        "sceNetCtlApDialogOpen",
+        "sceNetCtlApDialogClose",
+        "sceNetCtlApDialogUpdateStatus",
+        "sceNetCtlApDialogGetStatus",
+        "sceNetCtlApDialogGetResult",
+    ];
+
+    // Softap control: bring a wireless access point up on the console so a client can associate to it,
+    // then read back its state, its published credentials, and the current connection info; callbacks
+    // fire on state changes and are drained by the caller.
+    private static readonly string[] NetCtlAp =
+    [
+        "sceNetCtlApInit",
+        "sceNetCtlApTerm",
+        "sceNetCtlApCheckCallback",
+        "sceNetCtlApClearEvent",
+        "sceNetCtlApRegisterCallback",
+        "sceNetCtlApUnregisterCallback",
+        "sceNetCtlApGetResult",
+        "sceNetCtlApGetInfo",
+        "sceNetCtlApGetState",
+        "sceNetCtlApStop",
+        "sceNetCtlApGetConnectInfo",
     ];
 
     // USB keyboard input.
@@ -1245,6 +1698,9 @@ public static class StubCatalog
         "sceSaveDataDialogGetResult",
         "sceSaveDataDialogClose",
         "sceSaveDataDialogIsReadyToDisplay",
+        // The progress bar an application drives while a long save or load runs.
+        "sceSaveDataDialogProgressBarInc",
+        "sceSaveDataDialogProgressBarSetValue",
     ];
 
     // The on-screen keyboard.
@@ -1269,6 +1725,76 @@ public static class StubCatalog
         "sceWebBrowserDialogClose",
         "sceWebBrowserDialogTerminate",
         "sceWebBrowserDialogResetCookie",
+        // The predetermined-content open path, used by an application that hands the browser a
+        // pre-approved URL alongside the ordinary dialog parameters.
+        "sceWebBrowserDialogOpenForPredeterminedContent",
+        // Set a cookie in the browser's jar before it opens, so the site sees the caller's
+        // authentication state on the first request.
+        "sceWebBrowserDialogSetCookie",
+    ];
+
+    // The login dialog the shell brings up when the running application asks the user to sign in.
+    private static readonly string[] LoginDialog =
+    [
+        "sceLoginDialogInitialize",
+        "sceLoginDialogTerminate",
+        "sceLoginDialogOpen",
+        "sceLoginDialogClose",
+        "sceLoginDialogUpdateStatus",
+        "sceLoginDialogGetStatus",
+        "sceLoginDialogGetResult",
+    ];
+
+    // The sign-in dialog the shell brings up when the running application asks the user to add or
+    // switch a service account.
+    private static readonly string[] SigninDialog =
+    [
+        "sceSigninDialogInitialize",
+        "sceSigninDialogTerminate",
+        "sceSigninDialogOpen",
+        "sceSigninDialogClose",
+        "sceSigninDialogUpdateStatus",
+        "sceSigninDialogGetStatus",
+        "sceSigninDialogGetResult",
+    ];
+
+    // The play-go download-progress dialog the shell brings up so the application can show the state
+    // of an install or download without drawing the progress itself.
+    private static readonly string[] PlayGoDialog =
+    [
+        "scePlayGoDialogInitialize",
+        "scePlayGoDialogTerminate",
+        "scePlayGoDialogOpen",
+        "scePlayGoDialogClose",
+        "scePlayGoDialogUpdateStatus",
+        "scePlayGoDialogGetStatus",
+        "scePlayGoDialogGetResult",
+    ];
+
+    // The party-invitation dialog the shell brings up so the running application can invite other
+    // players into a shared session.
+    private static readonly string[] PlayerInvitationDialog =
+    [
+        "scePlayerInvitationDialogInitialize",
+        "scePlayerInvitationDialogTerminate",
+        "scePlayerInvitationDialogOpen",
+        "scePlayerInvitationDialogClose",
+        "scePlayerInvitationDialogUpdateStatus",
+        "scePlayerInvitationDialogGetStatus",
+        "scePlayerInvitationDialogGetResult",
+    ];
+
+    // The player-selection dialog the shell brings up so the running application can ask the user to
+    // pick one or more players from the platform's friend and party lists.
+    private static readonly string[] PlayerSelectionDialog =
+    [
+        "scePlayerSelectionDialogInitialize",
+        "scePlayerSelectionDialogTerminate",
+        "scePlayerSelectionDialogOpen",
+        "scePlayerSelectionDialogClose",
+        "scePlayerSelectionDialogUpdateStatus",
+        "scePlayerSelectionDialogGetStatus",
+        "scePlayerSelectionDialogGetResult",
     ];
 
     private static readonly string[] AvPlayer =
@@ -1277,7 +1803,9 @@ public static class StubCatalog
         "sceAvPlayerInitEx",
         "sceAvPlayerPostInit",
         "sceAvPlayerAddSource",
+        "sceAvPlayerAddSourceEx",
         "sceAvPlayerStart",
+        "sceAvPlayerStartEx",
         "sceAvPlayerStop",
         "sceAvPlayerPause",
         "sceAvPlayerResume",
@@ -1289,15 +1817,26 @@ public static class StubCatalog
         "sceAvPlayerJumpToTime",
         "sceAvPlayerStreamCount",
         "sceAvPlayerGetStreamInfo",
+        "sceAvPlayerGetStreamInfoEx",
         "sceAvPlayerEnableStream",
         "sceAvPlayerDisableStream",
         "sceAvPlayerChangeStream",
+        // Trick play (fast forward, rewind) and AV synchronisation modes the caller sets to
+        // trade audio-video lock-step against timely video output when the two streams have
+        // drifted apart.
+        "sceAvPlayerSetTrickSpeed",
+        "sceAvPlayerSetAvSyncMode",
+        // Adaptive-bitrate hints for the streaming source: the initial, minimum and maximum
+        // bandwidth in bits per second the source may pick a rendition against.
+        "sceAvPlayerSetAvailableBandwidth",
+        // The logger surface: the callback the library invokes with formatted diagnostics and
+        // the printf/vprintf pair the caller drives that logger with.
         "sceAvPlayerSetLogCallback",
+        "sceAvPlayerVprintf",
         "sceAvPlayerClose",
     ];
 
-    // The package installer, resolved by name at run time (Platform.PackageInstaller). Kept in step
-    // with the SDK's own registry entry for the installer.
+    // The package installer, resolved by name at run time (Platform.PackageInstaller).
     private static readonly string[] AppInstUtil =
     [
         "sceAppInstUtilInitialize",
@@ -1312,8 +1851,7 @@ public static class StubCatalog
         "sceAppInstUtilInstallByPackage",
     ];
 
-    // USB mass storage, resolved by name at run time (Platform.UsbStorage). Kept in step with the
-    // SDK's own registry entry for USB storage.
+    // USB mass storage, resolved by name at run time (Platform.UsbStorage).
     private static readonly string[] UsbStorage =
     [
         "sceUsbStorageInit",
@@ -1403,6 +1941,39 @@ public static class StubCatalog
         "sceCoredumpRegisterCoredumpHandler",
         "sceCoredumpUnregisterCoredumpHandler",
         "sceCoredumpWriteUserData",
+    ];
+
+    // CPU profiler: push and pop labelled markers, plot named values against time, drop timestamped
+    // bookmarks, tag buffers for the data sampler, delimit logical file accesses, and query whether a
+    // host capture is running.
+    private static readonly string[] RazorCpu =
+    [
+        "sceRazorCpuFlushOccurred",
+        "sceRazorCpuDisableFiberUserMarkers",
+        "sceRazorCpuPushMarker",
+        "sceRazorCpuPushMarkerStatic",
+        "sceRazorCpuPopMarker",
+        "sceRazorCpuPlotValue",
+        "sceRazorCpuWriteBookmark",
+        "sceRazorCpuSync",
+        "sceRazorCpuNamedSync",
+        "sceRazorCpuInitDataTags",
+        "sceRazorCpuShutdownDataTags",
+        "sceRazorCpuGetDataTagStorageSize",
+        "sceRazorCpuTagArray",
+        "sceRazorCpuTagBuffer",
+        "sceRazorCpuResizeTaggedBuffer",
+        "sceRazorCpuUnTagBuffer",
+        "sceRazorCpuBeginLogicalFileAccess",
+        "sceRazorCpuEndLogicalFileAccess",
+        "sceRazorCpuIsCapturing",
+    ];
+
+    // The debug-only capture-control entries live in the paired _debug runtime library.
+    private static readonly string[] RazorCpuDebug =
+    [
+        "sceRazorCpuStartCapture",
+        "sceRazorCpuStopCapture",
     ];
 
     private static readonly string[] Agc =

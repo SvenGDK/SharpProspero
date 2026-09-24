@@ -116,6 +116,18 @@ public static unsafe partial class Audio3d
     [LibraryImport(Lib)]
     public static partial int sceAudio3dAudioOutOutputs(void* param, uint num);
 
+    /// <summary>Fills <paramref name="pParameters"/> with the recommended defaults for opening a port.</summary>
+    [LibraryImport(Lib)]
+    public static partial int sceAudio3dGetDefaultOpenParameters(void* pParameters);
+
+    /// <summary>Reads the current runtime status of a port.</summary>
+    [LibraryImport(Lib)]
+    public static partial int sceAudio3dPortGetStatus(uint uiPortId, void* pStatus);
+
+    /// <summary>Returns a static UTF-8 error string for the given error code, or null when the code is unknown.</summary>
+    [LibraryImport(Lib)]
+    public static partial byte* sceAudio3dStrError(int iErrorCode);
+
     /// <summary>Imported from the module.</summary>
     [LibraryImport(Lib)]
     public static partial int sceAudio3dPortCreate(uint uiGranularity, uint eRate, long iReserved, void* pId);

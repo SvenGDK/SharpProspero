@@ -89,6 +89,18 @@ public static unsafe partial class VideoOut
     [LibraryImport(Lib)]
     public static partial int sceVideoOutAddVblankEvent(nint eq, int handle, void* udata);
 
+    /// <summary>
+    /// System-privileged variant of <see cref="sceVideoOutAddVblankEvent"/> that registers a
+    /// vertical-blank event on the given equeue for a system-owned output. Available only to callers
+    /// that hold the display privilege; the parameters and return convention match the public entry.
+    /// </summary>
+    /// <param name="eq">An equeue handle from <c>sceKernelCreateEqueue</c>.</param>
+    /// <param name="handle">The display handle from <see cref="sceVideoOutOpen"/>.</param>
+    /// <param name="udata">User data pointer delivered with the event.</param>
+    /// <returns>Zero on success, or a negative error code.</returns>
+    [LibraryImport(Lib)]
+    public static partial int sceVideoOutSysAddVblankEvent(nint eq, int handle, void* udata);
+
     /// <summary>Removes a flip event from an equeue.</summary>
     [LibraryImport(Lib)]
     public static partial int sceVideoOutDeleteFlipEvent(nint eq, int handle);

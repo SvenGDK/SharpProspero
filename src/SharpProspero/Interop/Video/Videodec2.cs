@@ -241,6 +241,450 @@ public struct SceVideodec2ComputeConfigInfo
     private ushort _reserved1;
 }
 
+/// <summary>Per-picture information for an H.264 stream, drawn from the decoded picture.</summary>
+[StructLayout(LayoutKind.Sequential)]
+public struct SceVideodec2AvcPictureInfo
+{
+    /// <summary>The size of this structure in bytes.</summary>
+    public nuint ThisSize;
+
+    /// <summary>Whether this picture-info entry carries a picture.</summary>
+    [MarshalAs(UnmanagedType.U1)] public bool IsValid;
+
+    /// <summary>When the picture should be shown.</summary>
+    public ulong PresentationTime;
+
+    /// <summary>When the unit was decoded.</summary>
+    public ulong DecodeTime;
+
+    /// <summary>The caller's value that came in with the access unit.</summary>
+    public ulong AttachedData;
+
+    /// <summary>Whether the picture is an IDR frame.</summary>
+    public byte IdrPictureFlag;
+
+    /// <summary>The profile id from the SPS.</summary>
+    public byte ProfileIdc;
+
+    /// <summary>The level id from the SPS.</summary>
+    public byte LevelIdc;
+
+    /// <summary>The stored picture width in macroblocks, minus one.</summary>
+    public uint PicWidthInMbsMinus1;
+
+    /// <summary>The stored picture height in map units, minus one.</summary>
+    public uint PicHeightInMapUnitsMinus1;
+
+    /// <summary>Whether the sequence is coded as frames only.</summary>
+    public byte FrameMbsOnlyFlag;
+
+    /// <summary>Whether the picture carries cropping offsets.</summary>
+    public byte FrameCroppingFlag;
+
+    /// <summary>The left crop offset from the SPS.</summary>
+    public uint FrameCropLeftOffset;
+
+    /// <summary>The right crop offset from the SPS.</summary>
+    public uint FrameCropRightOffset;
+
+    /// <summary>The top crop offset from the SPS.</summary>
+    public uint FrameCropTopOffset;
+
+    /// <summary>The bottom crop offset from the SPS.</summary>
+    public uint FrameCropBottomOffset;
+
+    /// <summary>Whether aspect-ratio information is signalled.</summary>
+    public byte AspectRatioInfoPresentFlag;
+
+    /// <summary>The aspect-ratio id from the SPS.</summary>
+    public byte AspectRatioIdc;
+
+    /// <summary>The sample aspect-ratio width.</summary>
+    public ushort SarWidth;
+
+    /// <summary>The sample aspect-ratio height.</summary>
+    public ushort SarHeight;
+
+    /// <summary>Whether video-signal-type information is signalled.</summary>
+    public byte VideoSignalTypePresentFlag;
+
+    /// <summary>The video format from the SPS.</summary>
+    public byte VideoFormat;
+
+    /// <summary>Whether the sample range is full.</summary>
+    public byte VideoFullRangeFlag;
+
+    /// <summary>Whether colour-description information is signalled.</summary>
+    public byte ColourDescriptionPresentFlag;
+
+    /// <summary>The colour-primaries id from the SPS.</summary>
+    public byte ColourPrimaries;
+
+    /// <summary>The transfer-characteristics id from the SPS.</summary>
+    public byte TransferCharacteristics;
+
+    /// <summary>The matrix-coefficients id from the SPS.</summary>
+    public byte MatrixCoefficients;
+
+    /// <summary>Whether timing information is signalled.</summary>
+    public byte TimingInfoPresentFlag;
+
+    /// <summary>The number of time units in one tick.</summary>
+    public uint NumUnitsInTick;
+
+    /// <summary>The number of ticks in one second.</summary>
+    public uint TimeScale;
+
+    /// <summary>Whether the frame rate is fixed.</summary>
+    public byte FixedFrameRateFlag;
+
+    /// <summary>Whether the SPS carries a bitstream-restriction section.</summary>
+    public byte BitstreamRestrictionFlag;
+
+    /// <summary>The largest DPB size the SPS says the decoder must hold.</summary>
+    public byte MaxDecFrameBuffering;
+
+    /// <summary>Whether picture-timing SEI is present.</summary>
+    public byte PicStructPresentFlag;
+
+    /// <summary>The pic_struct value from picture-timing SEI.</summary>
+    public byte PicStruct;
+
+    /// <summary>Whether the picture is a field, from the slice header.</summary>
+    public byte FieldPicFlag;
+
+    /// <summary>Whether a field picture is the bottom field.</summary>
+    public byte BottomFieldFlag;
+
+    /// <summary>Whether the picture carries a fresh SPS.</summary>
+    public byte SequenceParameterSetPresentFlag;
+
+    /// <summary>Whether the picture carries a fresh PPS.</summary>
+    public byte PictureParameterSetPresentFlag;
+
+    /// <summary>Whether an access-unit delimiter preceded the picture.</summary>
+    public byte AuDelimiterPresentFlag;
+
+    /// <summary>Whether an end-of-sequence NAL was seen.</summary>
+    public byte EndOfSequencePresentFlag;
+
+    /// <summary>Whether an end-of-stream NAL was seen.</summary>
+    public byte EndOfStreamPresentFlag;
+
+    /// <summary>Whether filler-data NALs were seen.</summary>
+    public byte FillerDataPresentFlag;
+
+    /// <summary>Whether picture-timing SEI was carried.</summary>
+    public byte PictureTimingSeiPresentFlag;
+
+    /// <summary>Whether buffering-period SEI was carried.</summary>
+    public byte BufferingPeriodSeiPresentFlag;
+
+    /// <summary>The constraint_set0 flag from the SPS.</summary>
+    public byte ConstraintSet0Flag;
+
+    /// <summary>The constraint_set1 flag from the SPS.</summary>
+    public byte ConstraintSet1Flag;
+
+    /// <summary>The constraint_set2 flag from the SPS.</summary>
+    public byte ConstraintSet2Flag;
+
+    /// <summary>The constraint_set3 flag from the SPS.</summary>
+    public byte ConstraintSet3Flag;
+
+    /// <summary>The constraint_set4 flag from the SPS.</summary>
+    public byte ConstraintSet4Flag;
+
+    /// <summary>The constraint_set5 flag from the SPS.</summary>
+    public byte ConstraintSet5Flag;
+}
+
+/// <summary>Per-picture information for an HEVC stream, drawn from the decoded picture.</summary>
+[StructLayout(LayoutKind.Sequential)]
+public struct SceVideodec2HevcPictureInfo
+{
+    /// <summary>The size of this structure in bytes.</summary>
+    public nuint ThisSize;
+
+    /// <summary>Whether this picture-info entry carries a picture.</summary>
+    [MarshalAs(UnmanagedType.U1)] public bool IsValid;
+
+    /// <summary>When the picture should be shown.</summary>
+    public ulong PresentationTime;
+
+    /// <summary>When the unit was decoded.</summary>
+    public ulong DecodeTime;
+
+    /// <summary>The caller's value that came in with the access unit.</summary>
+    public ulong AttachedData;
+
+    /// <summary>The stored picture width in luma samples.</summary>
+    public uint PicWidthInLumaSamples;
+
+    /// <summary>The stored picture height in luma samples.</summary>
+    public uint PicHeightInLumaSamples;
+
+    /// <summary>Bit depth for the luma plane, minus 8.</summary>
+    public byte BitDepthLumaMinus8;
+
+    /// <summary>Bit depth for the chroma planes, minus 8.</summary>
+    public byte BitDepthChromaMinus8;
+
+    /// <summary>Whether timing information is signalled.</summary>
+    public byte TimingInfoPresentFlag;
+
+    /// <summary>The number of time units in one tick.</summary>
+    public uint NumUnitsInTick;
+
+    /// <summary>The number of ticks in one second.</summary>
+    public uint TimeScale;
+
+    /// <summary>Whether aspect-ratio information is signalled.</summary>
+    public uint AspectRatioInfoPresentFlag;
+
+    /// <summary>The aspect-ratio id from the VUI.</summary>
+    public byte AspectRatioIdc;
+
+    /// <summary>The sample aspect-ratio width.</summary>
+    public ushort SarWidth;
+
+    /// <summary>The sample aspect-ratio height.</summary>
+    public ushort SarHeight;
+
+    /// <summary>Whether video-signal-type information is signalled.</summary>
+    public byte VideoSignalTypePresentFlag;
+
+    /// <summary>The video format from the VUI.</summary>
+    public byte VideoFormat;
+
+    /// <summary>Whether the sample range is full.</summary>
+    public byte VideoFullRangeFlag;
+
+    /// <summary>Whether colour-description information is signalled.</summary>
+    public byte ColourDescriptionPresentFlag;
+
+    /// <summary>The colour-primaries id from the VUI.</summary>
+    public byte ColourPrimaries;
+
+    /// <summary>The transfer-characteristics id from the VUI.</summary>
+    public byte TransferCharacteristics;
+
+    /// <summary>The matrix-coefficients id from the VUI.</summary>
+    public byte MatrixCoeffs;
+
+    /// <summary>Whether frame-field information is signalled.</summary>
+    public byte FrameFieldInfoPresentFlag;
+
+    /// <summary>The pic_struct value from picture-timing SEI.</summary>
+    public uint PicStruct;
+
+    /// <summary>The source scan type reported by SEI.</summary>
+    public uint SourceScanType;
+
+    /// <summary>Whether the picture is marked duplicate.</summary>
+    public uint DuplicateFlag;
+
+    /// <summary>Whether the SPS carries a conformance window.</summary>
+    public uint ConformanceWindowFlag;
+
+    /// <summary>The conformance window left offset.</summary>
+    public uint ConfWinLeftOffset;
+
+    /// <summary>The conformance window right offset.</summary>
+    public uint ConfWinRightOffset;
+
+    /// <summary>The conformance window top offset.</summary>
+    public uint ConfWinTopOffset;
+
+    /// <summary>The conformance window bottom offset.</summary>
+    public uint ConfWinBottomOffset;
+
+    /// <summary>Whether the VUI carries a default display window.</summary>
+    public uint DefaultDisplayWindowFlag;
+
+    /// <summary>The default display window left offset.</summary>
+    public uint DefDispWinLeftOffset;
+
+    /// <summary>The default display window right offset.</summary>
+    public uint DefDispWinRightOffset;
+
+    /// <summary>The default display window top offset.</summary>
+    public uint DefDispWinTopOffset;
+
+    /// <summary>The default display window bottom offset.</summary>
+    public uint DefDispWinBottomOffset;
+
+    /// <summary>Whether chroma-sample-location information is signalled.</summary>
+    public byte ChromaLocInfoPresentFlag;
+
+    /// <summary>The chroma sample location type for the top field.</summary>
+    public byte ChromaSampleLocTypeTopField;
+
+    /// <summary>The chroma sample location type for the bottom field.</summary>
+    public byte ChromaSampleLocTypeBottomField;
+
+    /// <summary>Whether the sequence is a field sequence.</summary>
+    public byte FieldSeqFlag;
+
+    /// <summary>Whether the picture carries a fresh VPS.</summary>
+    public byte VideoParameterSetPresentFlag;
+
+    /// <summary>Whether the picture carries a fresh SPS.</summary>
+    public byte SequenceParameterSetPresentFlag;
+
+    /// <summary>Whether the picture carries a fresh PPS.</summary>
+    public byte PictureParameterSetPresentFlag;
+
+    /// <summary>Whether an access-unit delimiter preceded the picture.</summary>
+    public byte AuDelimiterPresentFlag;
+
+    /// <summary>Whether an end-of-sequence NAL was seen.</summary>
+    public byte EndOfSequencePresentFlag;
+
+    /// <summary>Whether an end-of-stream NAL was seen.</summary>
+    public byte EndOfStreamPresentFlag;
+
+    /// <summary>Whether filler-data NALs were seen.</summary>
+    public byte FillerDataPresentFlag;
+
+    /// <summary>Whether picture-timing SEI was carried.</summary>
+    public byte PictureTimingSeiPresentFlag;
+
+    /// <summary>Whether buffering-period SEI was carried.</summary>
+    public byte BufferingPeriodSeiPresentFlag;
+
+    /// <summary>Whether frame-packing arrangement SEI was carried.</summary>
+    public byte FramePackingArrangementSeiPresentFlag;
+
+    /// <summary>Whether alternative-transfer-characteristics SEI was carried.</summary>
+    public byte AlternativeTransferCharacteristicsSeiPresentFlag;
+
+    /// <summary>Whether the picture is an IDR frame.</summary>
+    public byte IdrPictureFlag;
+
+    /// <summary>Whether the picture is an IRAP frame.</summary>
+    public byte IrapPictureFlag;
+
+    /// <summary>The general_profile_space value from the PTL.</summary>
+    public byte GeneralProfileSpace;
+
+    /// <summary>The general_tier_flag value from the PTL.</summary>
+    public byte GeneralTierFlag;
+
+    /// <summary>The general_profile_idc value from the PTL.</summary>
+    public byte GeneralProfileIdc;
+
+    /// <summary>The general_progressive_source_flag value from the PTL.</summary>
+    public byte GeneralProgressiveSourceFlag;
+
+    /// <summary>The general_interlaced_source_flag value from the PTL.</summary>
+    public byte GeneralInterlacedSourceFlag;
+
+    /// <summary>The general_frame_only_constraint_flag value from the PTL.</summary>
+    public byte GeneralFrameOnlyConstraintFlag;
+
+    /// <summary>The general_level_idc value from the PTL.</summary>
+    public byte GeneralLevelIdc;
+
+    /// <summary>Whether the sub-layer profile is present.</summary>
+    public byte SubLayerProfilePresentFlag;
+
+    /// <summary>Whether the sub-layer level is present.</summary>
+    public byte SubLayerLevelPresentFlag;
+
+    /// <summary>The sub-layer profile-space value.</summary>
+    public byte SubLayerProfileSpace;
+
+    /// <summary>The sub-layer tier flag.</summary>
+    public byte SubLayerTierFlag;
+
+    /// <summary>The sub-layer profile id.</summary>
+    public byte SubLayerProfileIdc;
+
+    /// <summary>The sub-layer level id.</summary>
+    public byte SubLayerLevelIdc;
+
+    /// <summary>Whether the SPS carries sub-layer ordering information.</summary>
+    public byte SubLayerOrderingInfoPresentFlag;
+
+    /// <summary>The largest DPB size the SPS says the decoder must hold, minus one.</summary>
+    public byte MaxDecPicBufferingMinus1;
+
+    /// <summary>The preferred transfer characteristics from alternative-transfer-characteristics SEI.</summary>
+    public byte PreferredTransferCharacteristics;
+
+    /// <summary>Whether the picture carries a conformance/cropping window.</summary>
+    public byte FrameCroppingFlag;
+
+    /// <summary>The left crop offset.</summary>
+    public uint FrameCropLeftOffset;
+
+    /// <summary>The right crop offset.</summary>
+    public uint FrameCropRightOffset;
+
+    /// <summary>The top crop offset.</summary>
+    public uint FrameCropTopOffset;
+
+    /// <summary>The bottom crop offset.</summary>
+    public uint FrameCropBottomOffset;
+}
+
+/// <summary>Per-picture information for a VP9 stream, drawn from the decoded picture.</summary>
+[StructLayout(LayoutKind.Sequential)]
+public struct SceVideodec2Vp9PictureInfo
+{
+    /// <summary>The size of this structure in bytes.</summary>
+    public nuint ThisSize;
+
+    /// <summary>Whether this picture-info entry carries a picture.</summary>
+    [MarshalAs(UnmanagedType.U1)] public bool IsValid;
+
+    /// <summary>When the picture should be shown.</summary>
+    public ulong PresentationTime;
+
+    /// <summary>When the unit was decoded.</summary>
+    public ulong DecodeTime;
+
+    /// <summary>The caller's value that came in with the access unit.</summary>
+    public ulong AttachedData;
+
+    /// <summary>The VP9 profile the stream is coded at.</summary>
+    public uint Profile;
+
+    /// <summary>The VP9 level the stream is coded at.</summary>
+    public uint Level;
+
+    /// <summary>1 for a key frame, 0 for a non-key frame.</summary>
+    public uint KeyFrameFlag;
+
+    /// <summary>1 when the frame is coded as intra-only.</summary>
+    public uint IntraOnly;
+
+    /// <summary>Bit depth of the picture, 8 or 10.</summary>
+    public byte BitDepth;
+
+    /// <summary>Sample range: 0 for studio swing, 1 for full swing.</summary>
+    public byte ColorRange;
+
+    /// <summary>The colour space the picture is in.</summary>
+    public uint ColorSpace;
+
+    /// <summary>How many frames are packed in this super-frame.</summary>
+    public uint NumFrames;
+
+    /// <summary>Coded frame width in pixels.</summary>
+    public uint FrameWidth;
+
+    /// <summary>Coded frame height in pixels.</summary>
+    public uint FrameHeight;
+
+    /// <summary>Render width in pixels.</summary>
+    public uint RenderWidth;
+
+    /// <summary>Render height in pixels.</summary>
+    public uint RenderHeight;
+}
+
 /// <summary>
 /// Compressed video decoding. The caller provides every piece of memory: it asks how much a compute
 /// queue needs and creates one, asks how much a decoder needs and creates it, then offers a buffer per
@@ -306,4 +750,26 @@ public static unsafe partial class Videodec2
     /// <summary>Drops what the decoder was carrying, for a seek.</summary>
     [LibraryImport(Lib)]
     public static partial int sceVideodec2Reset(void* decoder);
+
+    /// <summary>Fills a codec-appropriate picture-info structure from an output-info result. H.264 fills up to two entries (one per field for an interlaced picture); the other codecs fill only the first.</summary>
+    [LibraryImport(Lib)]
+    public static partial int sceVideodec2GetPictureInfo(
+        SceVideodec2OutputInfo* outputInfo, void* firstPictureInfoOut, void* secondPictureInfoOut);
+
+    /// <summary>Fills one or two H.264 picture-info entries from an output-info result. The two out-pointer arguments carry the top and bottom field pictures for an interlaced stream.</summary>
+    [LibraryImport(Lib)]
+    public static partial int sceVideodec2GetAvcPictureInfo(
+        SceVideodec2OutputInfo* outputInfo,
+        SceVideodec2AvcPictureInfo* firstPictureInfoOut,
+        SceVideodec2AvcPictureInfo* secondPictureInfoOut);
+
+    /// <summary>Fills an HEVC picture-info entry from an output-info result.</summary>
+    [LibraryImport(Lib)]
+    public static partial int sceVideodec2GetHevcPictureInfo(
+        SceVideodec2OutputInfo* outputInfo, SceVideodec2HevcPictureInfo* pictureInfoOut);
+
+    /// <summary>Fills a VP9 picture-info entry from an output-info result.</summary>
+    [LibraryImport(Lib)]
+    public static partial int sceVideodec2GetVp9PictureInfo(
+        SceVideodec2OutputInfo* outputInfo, SceVideodec2Vp9PictureInfo* pictureInfoOut);
 }

@@ -452,6 +452,15 @@ public static class KernelOffsets
     /// <summary><c>pr_ref</c>: the prison reference count (four bytes).</summary>
     public const int PrisonRef = 0x14;
 
+    /// <summary>
+    /// <c>pr_allow</c>: the allowed-operations bitmask in the prison structure (four bytes).
+    /// Each bit enables one class of operation the kernel would otherwise refuse for a
+    /// jailed credential. Bit <c>0x100</c> (PR_ALLOW_MOUNT_NULLFS) gates the kernel's
+    /// <c>modified_nullfs_mount</c> check; without it every <c>nmount(fstype=nullfs)</c>
+    /// call refuses with <c>EPERM</c> even when the caller's credential is otherwise root.
+    /// </summary>
+    public const int PrisonPrAllow = 0xF8;
+
     // ---- Thread list traversal offsets ----
 
     /// <summary><c>p_threads.tqh_first</c>: pointer to the first thread in the process.</summary>
@@ -603,6 +612,26 @@ public static class KernelOffsets
         >= Fw700 => 0x9F8,
         >= Fw600 => 0x9E8,
         _ => 0x9C0,
+    };
+
+    /// <summary>
+    /// Returns the offset of the process-side dynamic-linker head pointer inside
+    /// <c>struct proc</c> for the given firmware. The SharedObject list walker follows this
+    /// pointer to enumerate a process's loaded modules. Returns <c>-1</c> for firmwares
+    /// whose offset is not on file; callers must treat that as "cannot walk this process's
+    /// module list" and skip the operation rather than reading from a guessed offset.
+    /// </summary>
+    /// <remarks>
+    /// The 10.xx firmware family carries this pointer at <c>0x3E8</c> (verified against
+    /// the kernel loader that ships alongside the SDK: <c>p_dynlib = kernel_getlong(proc +
+    /// 0x3e8)</c>). Values for older firmwares are not empirically pinned here and must be
+    /// added by whoever wants to run against those releases; returning <c>-1</c> keeps the
+    /// SDK from silently reading a wrong quadword that happens to sit at a similar offset.
+    /// </remarks>
+    public static int ProcDynlib(uint fw) => (fw & VersionMask) switch
+    {
+        >= Fw1000 => 0x3E8,
+        _ => -1,
     };
 
     // =========================================================================

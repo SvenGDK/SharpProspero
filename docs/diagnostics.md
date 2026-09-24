@@ -102,4 +102,35 @@ The constructor takes an optional `window` (120 frames by default, at least two)
 
 `Draw` writes a one-line readout to a [2D surface](graphics.md) at a position and scale: the rate, the average frame time and the slowest frame in the window. `DrawGraph` draws a sparkline of the recent frame times, oldest at the left. The top of the box is a 33 ms frame, or the slowest frame in the window when that is slower, so a build holding 60 frames a second draws a flat line across the middle and a stutter spikes to the top; pass an optional border colour to frame it. Both take a `Surface` and colours from `SharpProspero.Graphics`.
 
+## CPU profiler markers
+
+`SharpProspero.Interop.Debug.RazorCpu` binds the CPU profiler entry points so a build can push labelled markers, plot named values against time, drop bookmarks, tag buffers for the data sampler, delimit logical file accesses, and ask whether a host capture is active. `SharpProspero.Interop.Debug.RazorCpuDebug` adds the two capture-control entries, so a build can start or stop a capture from its own code when the host is listening for the command.
+
+```csharp
+using SharpProspero.Interop.Debug;
+
+unsafe
+{
+    fixed (byte* label = "level-load\0"u8)
+    {
+        RazorCpu.sceRazorCpuPushMarker(label, RazorCpu.ColorGreen, RazorCpu.MarkerPromiseScoped);
+        LoadLevel();
+        RazorCpu.sceRazorCpuPopMarker();
+    }
+
+    fixed (byte* series = "fps\0"u8)
+        RazorCpu.sceRazorCpuPlotValue(series, stats.Fps);
+}
+```
+
+Every marker takes a NUL-terminated UTF-8 label (up to 16,384 bytes including the terminator), an ABGR colour word (the `Color*` constants cover the common eight), and a flag word. `MarkerPromiseScoped` promises the pop matches the push inside the same function so the profiler captures a backtrace for the marker; `MarkerEnableHud` shows the marker in the head-up display. `sceRazorCpuPushMarkerStatic` skips the label copy when the string is static and lives for the whole capture; `sceRazorCpuIsCapturing` reports whether a capture is running so a build can skip marker work on unwatched frames.
+
+Bookmarks and plots share the same shape: `sceRazorCpuWriteBookmark(label, description)` writes a timestamped bookmark with an optional description, and `sceRazorCpuPlotValue(series, value)` adds one point to a named series. `sceRazorCpuSync` and `sceRazorCpuNamedSync` emit frame-boundary events - one unnamed, one with a label - for capture tools that align on frame ticks. `sceRazorCpuFlushOccurred` reports whether an internal buffer flush ran since the last call, and optionally the cycles the flush took.
+
+The data sampler needs backing storage first. `sceRazorCpuGetDataTagStorageSize(tagCount)` returns the byte size a tag table needs for that many entries; hand a buffer of that size (or larger) to `sceRazorCpuInitDataTags`, then attach tags with `sceRazorCpuTagArray` (fixed-size elements) or `sceRazorCpuTagBuffer` (opaque bytes). `sceRazorCpuResizeTaggedBuffer` changes the recorded size, `sceRazorCpuUnTagBuffer` closes a tag, and `sceRazorCpuShutdownDataTags` releases the storage.
+
+`sceRazorCpuBeginLogicalFileAccess(path, tag, size, LogicalFileRead)` opens a logical-file region on the current thread; every subsequent read or write is attributed to the named file until `sceRazorCpuEndLogicalFileAccess` closes it. `sceRazorCpuDisableFiberUserMarkers` switches the marker context from a running fiber to the plain thread when a build does not use the fiber machinery.
+
+`RazorCpuDebug.sceRazorCpuStartCapture` and `sceRazorCpuStopCapture` return zero on success, or `RazorCpuDebug.ErrorHostNotListening` when the host is not currently listening for a start or stop request. Every entry point returns a negative error code on failure, so a build can check `SceResult.Failed(rc)` before continuing.
+
 For the clocks and timers that drive a frame loop, see [Timing](timing.md); to move work that would stall a frame onto another thread, see [Threading](threading.md).

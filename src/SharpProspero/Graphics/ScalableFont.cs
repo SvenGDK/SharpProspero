@@ -354,23 +354,28 @@ public abstract unsafe class ScalableFont : IDisposable, ITextFont
             return;
         _disposed = true;
 
+        // The teardown mirrors the engine's own construction order in reverse: the renderer is
+        // destroyed before the library so a still-live rasterizer never reads library-managed
+        // memory that the library's destructor has already handed back to the memory block. The
+        // SDK sample follows the same order (renderer then library), and reversing them produces
+        // the same undefined behaviour a caller who freed an object before its consumer would.
         if (FontHandle != null)
         {
             SceFont.sceFontUnbindRenderer(FontHandle);
             SceFont.sceFontCloseFont(FontHandle);
             FontHandle = null;
         }
-        if (Library != null)
-        {
-            void* library = Library;
-            SceFont.sceFontDestroyLibrary(&library);
-            Library = null;
-        }
         if (Renderer != null)
         {
             void* renderer = Renderer;
             SceFont.sceFontDestroyRenderer(&renderer);
             Renderer = null;
+        }
+        if (Library != null)
+        {
+            void* library = Library;
+            SceFont.sceFontDestroyLibrary(&library);
+            Library = null;
         }
         SceFont.sceFontMemoryTerm(_memory);
 

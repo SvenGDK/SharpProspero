@@ -20,6 +20,11 @@ namespace SharpProspero.Ui;
 /// placed relative to the window rather than the screen, so a control inside reads its
 /// <see cref="UiElement.Bounds"/> in the window's own coordinates; drawing goes through
 /// <see cref="Surface.Region"/>, which is what clips it.
+///
+/// The window listens to the bumper and trigger buttons as well as the d-pad: L1 and R1 page the
+/// content by a full window height, L2 jumps to the top and R2 to the bottom. The scrollbar reads
+/// the current offset and content height at draw time, so paging, jumping and a resized content
+/// panel all show up on the next frame without cached geometry.
 /// </remarks>
 /// <param name="content">The content to show.</param>
 public sealed class ScrollView(UiElement content) : UiElement
@@ -59,6 +64,17 @@ public sealed class ScrollView(UiElement content) : UiElement
         return true;
     }
 
+    /// <summary>Moves the content to <paramref name="offset"/> pixels from the top, clamped to the window.</summary>
+    /// <returns>True when the position actually changed.</returns>
+    public bool ScrollTo(int offset)
+    {
+        int target = Math.Clamp(offset, 0, MaxScroll);
+        if (target == _scroll)
+            return false;
+        _scroll = target;
+        return true;
+    }
+
     /// <summary>Moves the content back to the top.</summary>
     public void ScrollToTop() => _scroll = 0;
 
@@ -79,6 +95,14 @@ public sealed class ScrollView(UiElement content) : UiElement
             return ScrollBy(step);
         if (input.Up)
             return ScrollBy(-step);
+        if (input.PageDown)
+            return ScrollBy(ViewHeight);
+        if (input.PageUp)
+            return ScrollBy(-ViewHeight);
+        if (input.Home)
+            return ScrollTo(0);
+        if (input.End)
+            return ScrollTo(MaxScroll);
         return false;
     }
 
@@ -119,14 +143,17 @@ public sealed class ScrollView(UiElement content) : UiElement
             return;
 
         // A bar on the right whose length is the share of the content in view and whose position is how
-        // far down that share sits.
+        // far down that share sits. Every value is read fresh from the window's own state at draw time,
+        // so a page, a jump or an arrow-key move all reflect on the next frame with no cached geometry.
         const int barWidth = 4;
         int trackX = Bounds.Right - barWidth;
         surface.FillRect(trackX, Bounds.Y, barWidth, Bounds.Height, theme.Border);
 
-        int thumbHeight = Math.Max(theme.Spacing, (int)((long)Bounds.Height * Bounds.Height / _contentHeight));
-        int travel = Bounds.Height - thumbHeight;
-        int thumbY = Bounds.Y + (int)((long)travel * _scroll / MaxScroll);
+        int content = Math.Max(1, _contentHeight);
+        int thumbHeight = Math.Max(theme.Spacing, (int)((long)Bounds.Height * Bounds.Height / content));
+        int travel = Math.Max(0, Bounds.Height - thumbHeight);
+        int max = Math.Max(1, MaxScroll);
+        int thumbY = Bounds.Y + (int)((long)travel * _scroll / max);
         surface.FillRect(trackX, thumbY, barWidth, thumbHeight,
             ReferenceEquals(focused, this) ? theme.Accent : theme.TextMuted);
     }

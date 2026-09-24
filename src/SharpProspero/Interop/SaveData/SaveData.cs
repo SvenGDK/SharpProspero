@@ -20,6 +20,12 @@ public enum SaveDataMountMode : uint
 
     /// <summary>Copy the application's icon into a newly created save.</summary>
     CopyIcon = 0x00000010,
+
+    /// <summary>
+    /// Mount for read and write. Creates the save first when it does not exist, then mounts it for
+    /// read and write.
+    /// </summary>
+    Create2 = 0x00000020,
 }
 
 /// <summary>How a save is unmounted.</summary>
@@ -31,6 +37,9 @@ public enum SaveDataUmountMode : uint
 
     /// <summary>Commit changes on unmount.</summary>
     Commit = 0x00000001,
+
+    /// <summary>Copy the save into its backup slot after the unmount, on a separate thread.</summary>
+    BackupAsync = 0x00010000,
 }
 
 /// <summary>The key a directory search sorts by.</summary>
@@ -90,6 +99,50 @@ public enum SaveDataCommitMode : uint
 
     /// <summary>Confirm, then start a backup that runs on its own.</summary>
     BackupAsync = 1,
+}
+
+/// <summary>Which event a call to <see cref="SaveData.sceSaveDataGetEventResult"/> reports on.</summary>
+public enum SaveDataEventType : uint
+{
+    /// <summary>An unset event.</summary>
+    Invalid = 0,
+
+    /// <summary>The backup issued by an unmount call has completed.</summary>
+    UmountBackupEnd = 1,
+
+    /// <summary>The backup issued by <see cref="SaveData.sceSaveDataBackup"/> has completed.</summary>
+    BackupEnd = 2,
+
+    /// <summary>The memory synchronisation issued by <see cref="SaveData.sceSaveDataSyncSaveDataMemory"/> has completed.</summary>
+    SaveDataMemorySyncEnd = 3,
+
+    /// <summary>The backup issued by <see cref="SaveData.sceSaveDataCommit"/> has completed.</summary>
+    CommitBackupEnd = 4,
+}
+
+/// <summary>Options for the save-data memory slot set up by <see cref="SaveData.sceSaveDataSetupSaveDataMemory2"/>.</summary>
+[System.Flags]
+public enum SaveDataMemoryOption : uint
+{
+    /// <summary>No options.</summary>
+    None = 0,
+
+    /// <summary>Use the parameter block passed alongside the setup.</summary>
+    SetParam = 0x00000001,
+
+    /// <summary>Double-buffer the memory image.</summary>
+    DoubleBuffer = 0x00000002,
+}
+
+/// <summary>Options for the memory synchronisation call.</summary>
+[System.Flags]
+public enum SaveDataMemorySyncOption : uint
+{
+    /// <summary>No options.</summary>
+    None = 0,
+
+    /// <summary>Block the caller until the synchronisation finishes.</summary>
+    Blocking = 0x00000001,
 }
 
 /// <summary>A title id (10 characters plus padding).</summary>
@@ -206,6 +259,18 @@ public unsafe struct SceSaveDataMount3
     private fixed byte _reserved[32];
 }
 
+/// <summary>The parameters a transferring mount is opened with.</summary>
+[StructLayout(LayoutKind.Sequential, Size = 64)]
+public unsafe struct SceSaveDataTransferringMount
+{
+    public int UserId;
+    private int _pad0;
+    public SceSaveDataTitleId* TitleId;
+    public SceSaveDataDirName* DirName;
+    public SceSaveDataFingerprint* Fingerprint;
+    private fixed byte _reserved[32];
+}
+
 /// <summary>The result of a mount: the mount point path and status.</summary>
 [StructLayout(LayoutKind.Sequential, Size = 64)]
 public unsafe struct SceSaveDataMountResult
@@ -268,6 +333,102 @@ public unsafe struct SceSaveDataDirNameSearchResult
     private int _pad1;
 }
 
+/// <summary>The parameters of a save-data memory sync.</summary>
+[StructLayout(LayoutKind.Sequential, Size = 40)]
+public unsafe struct SceSaveDataMemorySync
+{
+    public int UserId;
+    public uint SlotId;
+    public SaveDataMemorySyncOption Option;
+    private fixed byte _reserved[28];
+}
+
+/// <summary>
+/// One area of the save-data memory image to set or get. <see cref="Buf"/> points at the caller's
+/// buffer, <see cref="BufSize"/> is its byte count, and <see cref="Offset"/> is the position in the
+/// memory image the transfer starts at.
+/// </summary>
+[StructLayout(LayoutKind.Sequential, Size = 64)]
+public unsafe struct SceSaveDataMemoryData
+{
+    public void* Buf;
+    public nuint BufSize;
+    public long Offset;
+    private fixed byte _reserved[40];
+}
+
+/// <summary>The parameters of a save-data memory setup.</summary>
+[StructLayout(LayoutKind.Sequential, Size = 64)]
+public unsafe struct SceSaveDataMemorySetup2
+{
+    public SaveDataMemoryOption Option;
+    public int UserId;
+    public nuint MemorySize;
+    public nuint IconMemorySize;
+    public SceSaveDataParam* InitParam;
+    public SceSaveDataIcon* InitIcon;
+    public uint SlotId;
+    private fixed byte _reserved[20];
+}
+
+/// <summary>The result of a save-data memory setup: the size the existing memory slot already has.</summary>
+[StructLayout(LayoutKind.Sequential, Size = 24)]
+public unsafe struct SceSaveDataMemorySetupResult
+{
+    public nuint ExistedMemorySize;
+    private fixed byte _reserved[16];
+}
+
+/// <summary>The parameters of a save-data memory get.</summary>
+[StructLayout(LayoutKind.Sequential, Size = 64)]
+public unsafe struct SceSaveDataMemoryGet2
+{
+    public int UserId;
+    private fixed byte _padding[4];
+    public SceSaveDataMemoryData* Data;
+    public SceSaveDataParam* Param;
+    public SceSaveDataIcon* Icon;
+    public uint SlotId;
+    private fixed byte _reserved[28];
+}
+
+/// <summary>The parameters of a save-data memory set.</summary>
+[StructLayout(LayoutKind.Sequential, Size = 64)]
+public unsafe struct SceSaveDataMemorySet2
+{
+    public int UserId;
+    private fixed byte _padding[4];
+    public SceSaveDataMemoryData* Data;
+    public SceSaveDataParam* Param;
+    public SceSaveDataIcon* Icon;
+    public uint DataNum;
+    public uint SlotId;
+    private fixed byte _reserved[24];
+}
+
+/// <summary>The event a call to <see cref="SaveData.sceSaveDataGetEventResult"/> writes back.</summary>
+[StructLayout(LayoutKind.Sequential, Size = 104)]
+public unsafe struct SceSaveDataEvent
+{
+    /// <summary>The event's kind, from <see cref="SaveDataEventType"/>.</summary>
+    public SaveDataEventType Type;
+
+    /// <summary>The error code the event carries.</summary>
+    public int ErrorCode;
+
+    /// <summary>The user id the event applies to.</summary>
+    public int UserId;
+    private fixed byte _padding[4];
+
+    /// <summary>The title id the event applies to.</summary>
+    public SceSaveDataTitleId TitleId;
+
+    /// <summary>The directory the event applies to.</summary>
+    public SceSaveDataDirName DirName;
+
+    private fixed byte _reserved[40];
+}
+
 /// <summary>Save data bindings.</summary>
 public static unsafe partial class SaveData
 {
@@ -284,6 +445,10 @@ public static unsafe partial class SaveData
     /// <summary>Mounts a save, returning its mount point in <paramref name="result"/>.</summary>
     [LibraryImport(Lib)]
     public static partial int sceSaveDataMount3(SceSaveDataMount3* mount, SceSaveDataMountResult* result);
+
+    /// <summary>Mounts a save from its backup for transfer to another user or console.</summary>
+    [LibraryImport(Lib)]
+    public static partial int sceSaveDataTransferringMount(SceSaveDataTransferringMount* mount, SceSaveDataMountResult* result);
 
     /// <summary>Unmounts a save.</summary>
     [LibraryImport(Lib)]
@@ -318,6 +483,33 @@ public static unsafe partial class SaveData
 
     /// <summary>The longest an icon path may be, including the terminator.</summary>
     public const int IconPathMaxSize = 128;
+
+    /// <summary>The largest save-data memory image the service supports, in bytes.</summary>
+    public const int MemoryMaxSize = 32 * 1024 * 1024;
+
+    /// <summary>The largest number of memory slots one call to <see cref="sceSaveDataSetupSaveDataMemory2"/> can prepare.</summary>
+    public const int MemorySetupMaxCount = 4;
+
+    /// <summary>The largest number of memory data pointers one call to <see cref="sceSaveDataSetSaveDataMemory2"/> can carry.</summary>
+    public const int MemoryDataNumMaxCount = 5;
+
+    /// <summary>The block size, in bytes, that <see cref="SceSaveDataMount3.Blocks"/> is expressed in.</summary>
+    public const int BlockSize2 = 65536;
+
+    /// <summary>The smallest block count a save may be created with, including system-reserved blocks.</summary>
+    public const int BlocksMin3 = 48;
+
+    /// <summary>The largest block count a save may be created with, including system-reserved blocks.</summary>
+    public const int BlocksMax2 = 16384;
+
+    /// <summary>The smallest transaction resource size, in bytes.</summary>
+    public const int TransactionResourceMinSize = 786432;
+
+    /// <summary>The largest number of transaction resource ids that may be live at once.</summary>
+    public const int TransactionResourceMaxCount = 16;
+
+    /// <summary>Value the service writes into an unclaimed transaction-resource id.</summary>
+    public const int TransactionResourceIdInvalid = -1;
 
     /// <summary>
     /// Writes the fields named by <paramref name="paramType"/> into the mounted save's parameter
@@ -377,4 +569,31 @@ public static unsafe partial class SaveData
     /// <summary>Copies a save into its backup slot.</summary>
     [LibraryImport(Lib)]
     public static partial int sceSaveDataBackup(SceSaveDataBackup* backup);
+
+    /// <summary>Writes the running save-data memory image out to storage.</summary>
+    [LibraryImport(Lib)]
+    public static partial int sceSaveDataSyncSaveDataMemory(SceSaveDataMemorySync* syncParam);
+
+    /// <summary>
+    /// Prepares the save-data memory slot the running application uses. Writes the existing memory-slot
+    /// size into <paramref name="result"/>.
+    /// </summary>
+    [LibraryImport(Lib)]
+    public static partial int sceSaveDataSetupSaveDataMemory2(
+        SceSaveDataMemorySetup2* setupParam, SceSaveDataMemorySetupResult* result);
+
+    /// <summary>Reads areas of the save-data memory image into caller-supplied buffers.</summary>
+    [LibraryImport(Lib)]
+    public static partial int sceSaveDataGetSaveDataMemory2(SceSaveDataMemoryGet2* getParam);
+
+    /// <summary>Writes caller-supplied buffers into areas of the save-data memory image.</summary>
+    [LibraryImport(Lib)]
+    public static partial int sceSaveDataSetSaveDataMemory2(SceSaveDataMemorySet2* setParam);
+
+    /// <summary>
+    /// Reads the next completion event for the running application into <paramref name="event"/>. Pass
+    /// null for <paramref name="eventParam"/> to receive the next event of any kind.
+    /// </summary>
+    [LibraryImport(Lib)]
+    public static partial int sceSaveDataGetEventResult(void* eventParam, SceSaveDataEvent* @event);
 }

@@ -52,6 +52,49 @@ public sealed unsafe class TcpConnection : IDisposable
     }
 
     /// <summary>
+    /// Creates a non-blocking TCP socket and starts connecting to <paramref name="address"/>. The
+    /// connection may complete immediately on loopback, or remain in progress for a remote host.
+    /// Register <see cref="Handle"/> in a <see cref="SocketPoller"/> for <see cref="PollEvents.Write"/>
+    /// and call <see cref="GetSocketError"/> when it fires to confirm the outcome.
+    /// </summary>
+    /// <exception cref="ProsperoException">The socket could not be created, or the connect failed for a
+    /// reason other than being in progress.</exception>
+    public static TcpConnection BeginConnect(SocketAddress address)
+    {
+        int socket = SocketError.Check(
+            Socket.sceNetSocket("sp_tcp", Socket.AfInet, Socket.SockStream, Socket.IpProtoTcp),
+            nameof(Socket.sceNetSocket));
+
+        SocketOptions.SetBlocking(socket, false);
+
+        SceNetSockaddrIn native = address.ToNative();
+        int result = Socket.sceNetConnect(socket, (SceNetSockaddr*)&native, 16);
+        if (result < 0)
+        {
+            int err = SocketError.Last();
+            // EINPROGRESS (36 on FreeBSD) is expected for a non-blocking connect.
+            if (err != 36)
+            {
+                ProsperoException error = SocketError.Failure(result, nameof(Socket.sceNetConnect));
+                Socket.sceNetSocketClose(socket);
+                throw error;
+            }
+        }
+        return new TcpConnection(socket);
+    }
+
+    /// <summary>
+    /// Reads and clears the pending error on this socket. Returns zero when no error is pending, which
+    /// after a non-blocking connect means the connection succeeded. A non-zero value is the error code.
+    /// </summary>
+    /// <exception cref="ObjectDisposedException">The connection is disposed.</exception>
+    public int GetSocketError()
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        return (int)SocketOptions.GetUInt(_socket, Socket.SolSocket, Socket.SoError);
+    }
+
+    /// <summary>
     /// Sends up to the length of <paramref name="data"/> and returns how many bytes were accepted,
     /// which may be fewer than offered. Use <see cref="SendAll"/> to send everything.
     /// </summary>

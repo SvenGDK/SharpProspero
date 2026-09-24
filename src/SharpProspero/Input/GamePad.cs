@@ -165,6 +165,7 @@ public sealed unsafe class GamePad : IDisposable
     private readonly int _handle;
     private readonly bool _ownsHandle;
     private LightBar? _lightBar;
+    private Vibration? _vibration;
     private bool _disposed;
 
     private GamePad(int handle, bool ownsHandle)
@@ -285,6 +286,13 @@ public sealed unsafe class GamePad : IDisposable
     /// first use and following the system color until a state is set.
     /// </summary>
     public LightBar LightBar => _lightBar ??= new LightBar(this);
+
+    /// <summary>
+    /// The vibration motors of this controller, with the frame-driven pulses, blinks, ramps and step
+    /// sequences built on top of them. Created on first use and staying idle - and writing nothing to the
+    /// controller - until a state is set.
+    /// </summary>
+    public Vibration Vibration => _vibration ??= new Vibration(this);
 
     /// <summary>Closes the controller handle.</summary>
     public void Dispose()

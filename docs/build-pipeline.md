@@ -253,7 +253,7 @@ Check a built module yourself at any time:
 sharpprospero-bindgen modules --module eboot.bin --folder sce_module
 ```
 
-A module the application carries also raises the system version the application requires, which Step 3c
+A module the application carries also raises the system version the application requires, which Step 3d
 settles.
 
 ## Step 3b: check the application's metadata
@@ -290,7 +290,26 @@ The fields, the kinds of title, and what the checks are looking for are describe
 sharpprospero-bindgen param --folder out/module
 ```
 
-## Step 3c: settle the system version
+## Step 3c: emit matching DDS textures
+
+The console renders the launch-panel and store artwork from DDS textures alongside the PNG files a
+project ships in `sce_sys`. After gathering the folder, the build walks it for any file whose name
+begins with `icon` or `pic` and writes a matching `.dds` next to each one - a DX10-header BC7
+texture with the 148-byte layout the loader accepts:
+
+```
+== Textures ==
+```
+
+Nothing is written when no PNG files match, and a PNG that already has an up-to-date DDS beside it
+is left alone. The step runs the `sharpprospero-bindgen sceassets` command; run it against a folder
+of your own at any time:
+
+```
+sharpprospero-bindgen sceassets --folder sce_sys
+```
+
+## Step 3d: settle the system version
 
 A module records the system it was built against, and the application has to require at least as much or
 the system installs it and then fails to load the module. The build reads every module it gathered and,
@@ -443,6 +462,13 @@ Two of the forwarders in the compat object are worth knowing about, because they
 - **The module's own address** is reported by reading the image start instruction-relative, which is
   the only way a module can learn where it was placed. The runtime uses that as the handle identifying
   the module, so answering "not found" would register it under a handle no address matches.
+
+The compat object also carries helpers the SDK itself calls. `SharpProspero.Memory.CpuCache.WriteBack`
+is one — a 29-byte body the emitter appends to an application module's compat object (never the
+payload variant, so app-vs-payload separation stays strict). The build declares
+`libSharpProsperoCompat` as a `DirectPInvoke` in `Prospero.App.props`, so the ahead-of-time compiler
+emits a direct call to the entry-point symbol rather than a runtime module lookup: the library name
+never reaches the loader. A missing symbol fails the link rather than becoming a silent runtime no-op.
 
 A plain `dotnet build` of the solution and the tests need none of this; it applies only to the link
 step, which runs after the compile step has restored the runtime pack.

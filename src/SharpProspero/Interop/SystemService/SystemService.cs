@@ -1,7 +1,9 @@
 // SharpProspero - a C# SDK for on-device application modules.
 // Copyright (C) 2026 SvenGDK
 
+using System.Collections.Generic;
 using System.Runtime.InteropServices;
+using System.Text;
 
 namespace SharpProspero.Interop.SystemService;
 
@@ -37,6 +39,45 @@ public static unsafe partial class SystemService
     /// <summary>Event type: another application was launched over this one.</summary>
     public const int EventLaunchApp = 0x10000007;
 
+    /// <summary>Event type: game live-streaming status changed.</summary>
+    public const int EventGameLiveStreamingStatusUpdate = 0x10000001;
+
+    /// <summary>Event type: a session invitation was received.</summary>
+    public const int EventSessionInvitation = 0x10000002;
+
+    /// <summary>Event type: an entitlement was added or updated.</summary>
+    public const int EventEntitlementUpdate = 0x10000003;
+
+    /// <summary>Event type: custom game data was received.</summary>
+    public const int EventGameCustomData = 0x10000004;
+
+    /// <summary>Event type: the display safe-area ratio changed.</summary>
+    public const int EventDisplaySafeAreaUpdate = 0x10000005;
+
+    /// <summary>Event type: a URL was opened.</summary>
+    public const int EventUrlOpen = 0x10000006;
+
+    /// <summary>Event type: an app-launch link was received.</summary>
+    public const int EventAppLaunchLink = 0x10000008;
+
+    /// <summary>Event type: add-on content finished installing.</summary>
+    public const int EventAddcontentInstall = 0x10000009;
+
+    /// <summary>Event type: the VR tracking position was reset.</summary>
+    public const int EventResetVrPosition = 0x1000000A;
+
+    /// <summary>Event type: a multiplayer join request was received.</summary>
+    public const int EventJoinEvent = 0x1000000B;
+
+    /// <summary>Event type: a PlayGo locus was updated.</summary>
+    public const int EventPlaygoLocusUpdate = 0x1000000C;
+
+    /// <summary>Event type: a Play Together host request was received.</summary>
+    public const int EventPlayTogetherHost = 0x1000000D;
+
+    /// <summary>Event type: the share menu was opened.</summary>
+    public const int EventOpenShareMenu = 0x30000000;
+
     /// <summary>An internal failure inside the service. Value 0x80A10001.</summary>
     public const int ErrorInternal = unchecked((int)0x80A10001);
 
@@ -54,6 +95,27 @@ public static unsafe partial class SystemService
 
     /// <summary>The safe-area ratio has not been chosen yet. Value 0x80A10006.</summary>
     public const int ErrorNeedDisplaySafeAreaSettings = unchecked((int)0x80A10006);
+
+    /// <summary>A URI argument exceeded the maximum length. Value 0x80A10007.</summary>
+    public const int ErrorInvalidUriLen = unchecked((int)0x80A10007);
+
+    /// <summary>A URI argument used an unsupported scheme (only http, https, psno are accepted). Value 0x80A10008.</summary>
+    public const int ErrorInvalidUriScheme = unchecked((int)0x80A10008);
+
+    /// <summary>No application information was found for the given app id. Value 0x80A10009.</summary>
+    public const int ErrorNoAppInfo = unchecked((int)0x80A10009);
+
+    /// <summary>The application's param.sfo is missing a required launch flag. Value 0x816B000D.</summary>
+    public const int ErrorLaunchNotFlagInParamSfo = unchecked((int)0x816B000D);
+
+    /// <summary>The application is suspended and cannot be launched. Value 0x816B000E.</summary>
+    public const int ErrorLaunchSuspended = unchecked((int)0x816B000E);
+
+    /// <summary>The application is not installed. Value 0x816B000F.</summary>
+    public const int ErrorLaunchNotInstalled = unchecked((int)0x816B000F);
+
+    /// <summary>The application could not be booted. Value 0x816B0010.</summary>
+    public const int ErrorLaunchCouldNotBoot = unchecked((int)0x816B0010);
 
     /// <summary>GPU load emulation off, so the GPU runs at its own pace.</summary>
     public const int GpuLoadEmulationModeOff = 0;
@@ -156,15 +218,13 @@ public static unsafe partial class SystemService
     public static partial int sceSystemServiceGetAppIdOfRunningBigApp();
 
     /// <summary>
-    /// Terminates the application with the given <paramref name="appId"/>.
+    /// Terminates the application with the given <paramref name="appId"/>. Wraps
+    /// <c>sceLncUtilKillApp</c> with error remapping.
     /// </summary>
     /// <param name="appId">Application id (from <see cref="sceSystemServiceGetAppIdOfRunningBigApp"/>).</param>
-    /// <param name="opt">Option flags (typically -1).</param>
-    /// <param name="method">Termination method (0 for graceful, 1 for forced).</param>
-    /// <param name="reason">Reason code (0 for no reason).</param>
     /// <returns>Zero on success, or a negative error code.</returns>
     [LibraryImport(Lib)]
-    public static partial int sceSystemServiceKillApp(uint appId, int opt, int method, int reason);
+    public static partial int sceSystemServiceKillApp(uint appId);
 
     /// <summary>
     /// Navigates the shell to the home screen, dismissing the foreground application.
@@ -206,7 +266,7 @@ public static unsafe partial class SystemService
     /// <param name="appId">The application id.</param>
     /// <returns>Zero on success, or a non-zero error code.</returns>
     [LibraryImport(Lib)]
-    public static partial uint sceLncUtilKillApp(uint appId);
+    public static partial int sceLncUtilKillApp(uint appId);
 
     /// <summary>
     /// Terminates the application with the given <paramref name="appId"/> and a reason code
@@ -216,7 +276,7 @@ public static unsafe partial class SystemService
     /// <param name="reason">Reason code for the termination.</param>
     /// <returns>Zero on success, or a negative error code.</returns>
     [LibraryImport(Lib)]
-    public static partial int sceLncUtilKillAppWithReason(int appId, int reason);
+    public static partial int sceLncUtilKillAppWithReason(uint appId, int reason);
 
     /// <summary>
     /// Launches an application with detailed launch parameters through the launch-notification
@@ -230,16 +290,149 @@ public static unsafe partial class SystemService
     public static partial int sceLncUtilLaunchApp(byte* titleId, byte** argv, LncAppParam* param);
 
     /// <summary>
-    /// Queries the detailed status of an application by its app id.
+    /// Queries the detailed status of an application by its app id. The output is a 16-byte
+    /// <see cref="SceSystemServiceAppStatus"/> containing the application identifier, its status
+    /// flags, and its current state.
     /// </summary>
+    /// <returns>Zero on success, or a negative error code.</returns>
     [LibraryImport(Lib)]
-    public static partial int sceSystemServiceGetAppStatus(void* status);
+    public static partial int sceSystemServiceGetAppStatus(SceSystemServiceAppStatus* status);
 
     /// <summary>
-    /// Registers a local process entry with the system service.
+    /// Registers a local process entry with the system service. Wraps
+    /// <c>sceLncUtilAddLocalProcess</c> with option translation.
+    /// </summary>
+    /// <param name="appId">Application id to register the process under.</param>
+    /// <param name="path">NUL-terminated UTF-8 path to the executable.</param>
+    /// <param name="argv">A null-terminated array of argument strings, or null.</param>
+    /// <param name="opt">Optional launch parameters structure, or null for defaults.</param>
+    /// <returns>Zero on success, or a negative error code.</returns>
+    [LibraryImport(Lib)]
+    public static partial int sceSystemServiceAddLocalProcess(uint appId, byte* path, byte** argv, void* opt);
+
+    /// <summary>
+    /// Fills <paramref name="list"/> with the status of every running application, including daemon
+    /// processes. Each entry occupies 0x8C (140) bytes. <paramref name="count"/> receives the
+    /// number of entries written.
+    /// </summary>
+    /// <param name="list">
+    /// Caller-allocated buffer of at least <see cref="MaxAppStatusEntries"/> entries.
+    /// </param>
+    /// <param name="filter">Filter value passed to the underlying launcher utility.</param>
+    /// <param name="count">Receives the number of entries written.</param>
+    /// <returns>Zero on success, or a negative error code.</returns>
+    [LibraryImport(Lib)]
+    public static partial int sceSystemServiceGetAppStatusListContainsDaemon(
+        SceSystemServiceAppStatusEntry* list, int filter, uint* count);
+
+    /// <summary>
+    /// Reads the status of the application that currently has input focus.
+    /// </summary>
+    /// <param name="status">Receives the focused application's status.</param>
+    /// <returns>Zero on success, <see cref="ErrorNoAppInfo"/> when no application has focus,
+    /// or another negative error code.</returns>
+    [LibraryImport(Lib)]
+    public static partial int sceSystemServiceGetAppFocusedAppStatus(SceSystemServiceAppStatus* status);
+
+    /// <summary>Maximum number of entries the status list can return.</summary>
+    public const int MaxAppStatusEntries = 32;
+
+    /// <summary>
+    /// Returns the status of every running application, including daemon processes.
+    /// </summary>
+    /// <param name="filter">Filter value passed to the underlying launcher utility.</param>
+    /// <param name="result">Zero on success, or a negative error code.</param>
+    /// <returns>An array of application statuses. Empty when the call fails or no applications
+    /// are running.</returns>
+    public static IReadOnlyList<SceSystemServiceAppStatus> GetAppStatusList(int filter, out int result)
+    {
+        SceSystemServiceAppStatusEntry* buf = stackalloc SceSystemServiceAppStatusEntry[MaxAppStatusEntries];
+        uint count = 0;
+        result = sceSystemServiceGetAppStatusListContainsDaemon(buf, filter, &count);
+        if (result < 0 || count == 0)
+            return System.Array.Empty<SceSystemServiceAppStatus>();
+
+        if (count > MaxAppStatusEntries)
+            count = MaxAppStatusEntries;
+
+        var list = new SceSystemServiceAppStatus[count];
+        for (uint i = 0; i < count; i++)
+        {
+            list[i] = new SceSystemServiceAppStatus
+            {
+                AppId = buf[i].AppId,
+                Status = buf[i].Status,
+                State = buf[i].State,
+            };
+        }
+        return list;
+    }
+
+    /// <summary>
+    /// Stops the background music player, so this module has the audio output to itself. Superseded by
+    /// <see cref="sceSystemServiceDisableMediaPlay"/> and kept for older callers.
+    /// </summary>
+    /// <returns>Zero on success, or a negative error code.</returns>
+    [LibraryImport(Lib)]
+    public static partial int sceSystemServiceDisableMusicPlayer();
+
+    /// <summary>
+    /// Allows the background music player to run again. Superseded by
+    /// <see cref="sceSystemServiceReenableMediaPlay"/> and kept for older callers.
+    /// </summary>
+    /// <returns>Zero on success, or a negative error code.</returns>
+    [LibraryImport(Lib)]
+    public static partial int sceSystemServiceReenableMusicPlayer();
+
+    /// <summary>
+    /// Reads the display's HDR tone-map luminance parameters (maximum full-frame, maximum, and minimum
+    /// luminance in candela per square metre) into <paramref name="hdrToneMapLuminance"/>. The tone-map
+    /// curve a renderer applies should reference these values when the panel is running in an HDR
+    /// output mode.
+    /// </summary>
+    /// <returns>Zero on success, or a negative error code.</returns>
+    [LibraryImport(Lib)]
+    public static partial int sceSystemServiceGetHdrToneMapLuminance(SceSystemServiceHdrToneMapLuminance* hdrToneMapLuminance);
+
+    /// <summary>
+    /// Reads the notice-screen skip flag for this application. A non-zero byte at <paramref name="value"/>
+    /// means the application may skip its introductory notice screen on this boot. The output is a single
+    /// byte holding a C <c>_Bool</c>.
+    /// </summary>
+    /// <returns>Zero on success, or a negative error code.</returns>
+    [LibraryImport(Lib)]
+    public static partial int sceSystemServiceGetNoticeScreenSkipFlag(byte* value);
+
+    /// <summary>
+    /// Prevents the system from setting the notice-screen skip flag automatically for this run. After
+    /// this call the application controls the flag through <see cref="sceSystemServiceSetNoticeScreenSkipFlag"/>.
+    /// </summary>
+    /// <returns>Zero on success, or a negative error code.</returns>
+    [LibraryImport(Lib)]
+    public static partial int sceSystemServiceDisableNoticeScreenSkipFlagAutoSet();
+
+    /// <summary>Sets the notice-screen skip flag for the running application.</summary>
+    /// <returns>Zero on success, or a negative error code.</returns>
+    [LibraryImport(Lib)]
+    public static partial int sceSystemServiceSetNoticeScreenSkipFlag();
+
+    /// <summary>
+    /// Fills <paramref name="param"/> with default values. The caller then chooses the
+    /// <see cref="SceSystemServicePlayerDialogParam.Mode"/>, <see cref="SceSystemServicePlayerDialogParam.UserId"/>,
+    /// and <see cref="SceSystemServicePlayerDialogParam.TargetAccountId"/> fields before invoking
+    /// <see cref="sceSystemServiceLaunchPlayerDialog"/>.
     /// </summary>
     [LibraryImport(Lib)]
-    public static partial int sceSystemServiceAddLocalProcess(void* param);
+    public static partial void sceSystemServiceInitializePlayerDialogParam(SceSystemServicePlayerDialogParam* param);
+
+    /// <summary>
+    /// Launches the system player dialog against the target account described by <paramref name="param"/>.
+    /// The dialog can present the send-friend-request flow, the block-user flow, or the profile page
+    /// depending on <see cref="SceSystemServicePlayerDialogParam.Mode"/>.
+    /// </summary>
+    /// <returns>Zero on success, or a negative error code.</returns>
+    [LibraryImport(Lib)]
+    public static partial int sceSystemServiceLaunchPlayerDialog(SceSystemServicePlayerDialogParam* param);
 
 }
 
@@ -305,10 +498,174 @@ public unsafe struct SceSystemServiceDisplaySafeAreaInfo
     private fixed byte _reserved[128];
 }
 
-/// <summary>One system event. Only the type is read here; the remaining bytes are event-specific data.</summary>
+/// <summary>
+/// Status of a running application, as reported by the status query and focused-app query APIs.
+/// </summary>
+[StructLayout(LayoutKind.Sequential)]
+public struct SceSystemServiceAppStatus
+{
+    /// <summary>Application identifier.</summary>
+    public ulong AppId;
+
+    /// <summary>Application status flags.</summary>
+    public uint Status;
+
+    /// <summary>Application state.</summary>
+    public uint State;
+}
+
+/// <summary>
+/// One entry in the application status list returned by
+/// <see cref="SystemService.sceSystemServiceGetAppStatusListContainsDaemon"/>. The first 16 bytes
+/// carry the <see cref="AppId"/>, <see cref="Status"/>, and <see cref="State"/> fields; the
+/// remaining bytes are reserved. Each entry occupies 0x8C (140) bytes.
+/// </summary>
+[StructLayout(LayoutKind.Sequential, Size = 0x8C)]
+public struct SceSystemServiceAppStatusEntry
+{
+    /// <summary>Application identifier.</summary>
+    public ulong AppId;
+
+    /// <summary>Application status flags.</summary>
+    public uint Status;
+
+    /// <summary>Application state.</summary>
+    public uint State;
+}
+
+/// <summary>
+/// One system event. The first four bytes hold the event type, and the remaining 8192 bytes
+/// are a union whose contents depend on the type. Messaging events (such as
+/// <see cref="SystemService.EventLaunchApp"/>) carry a payload; flag events (such as
+/// <see cref="SystemService.EventOnResume"/>) leave the union zeroed.
+/// </summary>
 [StructLayout(LayoutKind.Sequential, Size = 8196)]
-public struct SceSystemServiceEvent
+public unsafe struct SceSystemServiceEvent
 {
     /// <summary>The event type, one of the <c>SystemService.Event*</c> values.</summary>
     public int EventType;
+
+    private fixed byte _unionData[8192];
+
+    /// <summary>
+    /// Reads the launch argument from a <see cref="SystemService.EventLaunchApp"/> event.
+    /// The argument is the UTF-8 string that was passed to
+    /// <see cref="SystemService.sceSystemServiceLaunchApp"/>.
+    /// </summary>
+    /// <param name="arg">Receives the argument string when the event type matches.</param>
+    /// <returns><c>true</c> when the event is a launch-app event and <paramref name="arg"/> was
+    /// populated; <c>false</c> otherwise.</returns>
+    public bool TryGetLaunchAppArg(out string arg)
+    {
+        if (EventType != SystemService.EventLaunchApp)
+        {
+            arg = string.Empty;
+            return false;
+        }
+        fixed (byte* p = _unionData)
+        {
+            int len = 0;
+            while (len < 8192 && p[len] != 0) len++;
+            arg = len > 0 ? Encoding.UTF8.GetString(p, len) : string.Empty;
+        }
+        return true;
+    }
+
+    /// <summary>
+    /// Reads the URI from a <see cref="SystemService.EventAppLaunchLink"/> event. The link is a
+    /// NUL-terminated UTF-8 URI that was delivered by the shell.
+    /// </summary>
+    /// <param name="link">Receives the URI when the event type matches.</param>
+    /// <returns><c>true</c> when the event is an app-launch-link event and <paramref name="link"/>
+    /// was populated; <c>false</c> otherwise.</returns>
+    public bool TryGetAppLaunchLink(out string link)
+    {
+        if (EventType != SystemService.EventAppLaunchLink)
+        {
+            link = string.Empty;
+            return false;
+        }
+        fixed (byte* p = _unionData)
+        {
+            int len = 0;
+            while (len < 8192 && p[len] != 0) len++;
+            link = len > 0 ? Encoding.UTF8.GetString(p, len) : string.Empty;
+        }
+        return true;
+    }
+
+    /// <summary>
+    /// Returns a pointer to the 8192-byte union payload and its maximum length. The caller must
+    /// check <see cref="EventType"/> to decide how to interpret the bytes. The pointer is valid
+    /// only while this struct is pinned or on the stack.
+    /// </summary>
+    /// <param name="length">Receives 8192, the union's total byte count.</param>
+    /// <returns>A pointer to the first byte of the payload.</returns>
+    public byte* GetPayloadPtr(out int length)
+    {
+        length = 8192;
+        fixed (byte* p = _unionData)
+        {
+            return p;
+        }
+    }
+}
+
+/// <summary>
+/// Which flow the system player dialog runs against the target account, as
+/// <see cref="SystemService.sceSystemServiceLaunchPlayerDialog"/> reads it from
+/// <see cref="SceSystemServicePlayerDialogParam.Mode"/>.
+/// </summary>
+public enum SceSystemServicePlayerDialogMode : int
+{
+    /// <summary>Present the send-friend-request flow for the target account.</summary>
+    SendFriendRequest = 0,
+
+    /// <summary>Present the block-user flow for the target account.</summary>
+    BlockUser = 1,
+
+    /// <summary>Open the target account's profile page.</summary>
+    LaunchProfile = 2,
+}
+
+/// <summary>
+/// Parameters for <see cref="SystemService.sceSystemServiceLaunchPlayerDialog"/>. Fill through
+/// <see cref="SystemService.sceSystemServiceInitializePlayerDialogParam"/> before setting the fields
+/// the caller wants to change.
+/// </summary>
+[StructLayout(LayoutKind.Sequential)]
+public unsafe struct SceSystemServicePlayerDialogParam
+{
+    /// <summary>Structure size in bytes.</summary>
+    public nuint Size;
+
+    /// <summary>Which flow the dialog presents.</summary>
+    public SceSystemServicePlayerDialogMode Mode;
+
+    /// <summary>The user id the dialog runs on behalf of (a <c>SceUserServiceUserId</c>, or -1 for none).</summary>
+    public int UserId;
+
+    /// <summary>The target account's identifier.</summary>
+    public ulong TargetAccountId;
+
+    private fixed byte _reserved[40];
+}
+
+/// <summary>
+/// The display's HDR tone-map luminance parameters, as
+/// <see cref="SystemService.sceSystemServiceGetHdrToneMapLuminance"/> reports them. All three values are
+/// candela-per-square-metre luminances the renderer's tone-map curve should reference when the panel is
+/// running in an HDR output mode.
+/// </summary>
+[StructLayout(LayoutKind.Sequential)]
+public struct SceSystemServiceHdrToneMapLuminance
+{
+    /// <summary>Maximum full-frame tone-mapped luminance in candela per square metre.</summary>
+    public float MaxFullFrameToneMapLuminance;
+
+    /// <summary>Maximum tone-mapped luminance in candela per square metre.</summary>
+    public float MaxToneMapLuminance;
+
+    /// <summary>Minimum tone-mapped luminance in candela per square metre.</summary>
+    public float MinToneMapLuminance;
 }

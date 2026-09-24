@@ -17,7 +17,7 @@ buffers, text, XML, and message digests. Each has its own page; this is the map.
 | [Buffers and encodings](buffers.md) | `SharpProspero.Buffers` | Reading and writing binary data, bit fields, ring buffers, and hex/Base64/Base32. |
 | [Text utilities](text.md) | `SharpProspero.Text` | Human-readable formatting and fuzzy string matching. |
 | [XML](xml.md) | `SharpProspero.Xml` | A streaming reader and writer, and a small document model. |
-| [Hashing and checksums](hashing.md) | `SharpProspero.Security` | CRC-32, MD5, SHA-1, SHA-2, SHA-3, and HMAC. |
+| [Hashing and checksums](hashing.md) | `SharpProspero.Security` | CRC-32, MD5, SHA-1, SHA-2, SHA-3, HMAC, and AES-128 (block, CBC and XTS). |
 | [Compression and archives](compression.md) | `SharpProspero.Compression` | DEFLATE, zlib and gzip in both directions, and a ZIP reader and writer. |
 
 Most of these are self-contained: they compute in memory and touch no device service, so they work the

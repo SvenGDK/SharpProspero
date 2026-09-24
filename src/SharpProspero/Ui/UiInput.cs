@@ -7,10 +7,11 @@ using SharpProspero.Interop.Pad;
 namespace SharpProspero.Ui;
 
 /// <summary>
-/// One frame of navigation intent for the interface: the direction the user moved and whether they
-/// confirmed or cancelled. Each field is edge-triggered, true only on the frame the button becomes
-/// pressed, so holding a button moves once. Build it from two controller samples with
-/// <see cref="From(GamePadState, GamePadState)"/> and hand it to <see cref="UiScreen.Update"/>.
+/// One frame of navigation intent for the interface: the direction the user moved, whether they
+/// confirmed or cancelled, and the scroll keys they used. Each field is edge-triggered, true only on
+/// the frame the button becomes pressed, so holding a button moves once. Build it from two controller
+/// samples with <see cref="From(GamePadState, GamePadState, float)"/> and hand it to
+/// <see cref="UiScreen.Update"/>.
 /// </summary>
 /// <param name="Up">Move focus up (d-pad up pressed this frame).</param>
 /// <param name="Down">Move focus down.</param>
@@ -22,6 +23,18 @@ public readonly record struct UiInput(bool Up, bool Down, bool Left, bool Right,
 {
     /// <summary>No input this frame.</summary>
     public static UiInput None => default;
+
+    /// <summary>Scroll the focused window one screenful upward (L1 pressed this frame).</summary>
+    public bool PageUp { get; init; }
+
+    /// <summary>Scroll the focused window one screenful downward (R1 pressed this frame).</summary>
+    public bool PageDown { get; init; }
+
+    /// <summary>Jump the focused window to its top (L2 pressed this frame).</summary>
+    public bool Home { get; init; }
+
+    /// <summary>Jump the focused window to its bottom (R2 pressed this frame).</summary>
+    public bool End { get; init; }
 
     /// <summary>True when any of the four directions is set this frame.</summary>
     public bool HasDirection => Up || Down || Left || Right;
@@ -43,18 +56,46 @@ public readonly record struct UiInput(bool Up, bool Down, bool Left, bool Right,
 
     /// <summary>
     /// Reads the navigation intent from this frame's controller sample and the previous one, so each
-    /// button counts once when it becomes pressed. The d-pad drives the directions, cross confirms and
-    /// circle cancels.
+    /// button counts once when it becomes pressed. The d-pad drives the four directions, cross confirms
+    /// and circle cancels; the bumper and trigger buttons page and jump within a scrolling window. The
+    /// left analog stick pulses the same four directions when it moves past
+    /// <paramref name="stickThreshold"/> so a user who prefers the stick reaches every control the
+    /// d-pad does.
     /// </summary>
-    public static UiInput From(GamePadState current, GamePadState previous)
+    /// <param name="current">The controller sample taken this frame.</param>
+    /// <param name="previous">The controller sample taken on the previous frame, used to edge-trigger.</param>
+    /// <param name="stickThreshold">
+    /// How far the stick must lean past its centre to fire a direction pulse, from 0 to 1. Below this
+    /// the stick is treated as at rest, so a resting stick does not drift the focus around. Default
+    /// 0.65 gives a firm push before firing.
+    /// </param>
+    public static UiInput From(GamePadState current, GamePadState previous, float stickThreshold = 0.65f)
     {
         bool Edge(ScePadButton button) => current.IsPressed(button) && !previous.IsPressed(button);
+
+        (float curX, float curY) = current.LeftStick;
+        (float prevX, float prevY) = previous.LeftStick;
+
+        // A stick pulse fires when the stick crosses past the threshold in a direction it was not past
+        // last frame. The user has to release the stick back inside the threshold before the same
+        // direction fires again, which matches how the d-pad edge works.
+        bool stickUp = curY < -stickThreshold && prevY >= -stickThreshold;
+        bool stickDown = curY > stickThreshold && prevY <= stickThreshold;
+        bool stickLeft = curX < -stickThreshold && prevX >= -stickThreshold;
+        bool stickRight = curX > stickThreshold && prevX <= stickThreshold;
+
         return new UiInput(
-            Up: Edge(ScePadButton.Up),
-            Down: Edge(ScePadButton.Down),
-            Left: Edge(ScePadButton.Left),
-            Right: Edge(ScePadButton.Right),
+            Up: Edge(ScePadButton.Up) || stickUp,
+            Down: Edge(ScePadButton.Down) || stickDown,
+            Left: Edge(ScePadButton.Left) || stickLeft,
+            Right: Edge(ScePadButton.Right) || stickRight,
             Confirm: Edge(ScePadButton.Cross),
-            Cancel: Edge(ScePadButton.Circle));
+            Cancel: Edge(ScePadButton.Circle))
+        {
+            PageUp = Edge(ScePadButton.L1),
+            PageDown = Edge(ScePadButton.R1),
+            Home = Edge(ScePadButton.L2),
+            End = Edge(ScePadButton.R2),
+        };
     }
 }

@@ -223,6 +223,7 @@ public readonly unsafe partial struct Surface(uint* pixels, int width, int heigh
         }
     }
 
+
     // Source-over compositing of one pixel. On an opaque back buffer the destination alpha stays 0xFF;
     // on an off-screen target that carries alpha the result alpha is a + dst_a*(1-a) and the colour is
     // un-premultiplied against it, so compositing into a transparent buffer and blitting that buffer

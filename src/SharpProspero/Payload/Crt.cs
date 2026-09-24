@@ -115,8 +115,38 @@ public static unsafe partial class PayloadCrt
     /// <summary>SYS_write (4) — write to a file descriptor.</summary>
     public const int SYS_write = 4;
 
+    /// <summary>SYS_open (5) — open or create a file.</summary>
+    public const int SYS_open = 5;
+
     /// <summary>SYS_close (6) — close a file descriptor.</summary>
     public const int SYS_close = 6;
+
+    /// <summary>SYS_getdirentries (196) — read directory entries into a buffer.</summary>
+    public const int SYS_getdirentries = 196;
+
+    /// <summary>SYS_lseek (478) — reposition read/write file offset.</summary>
+    public const int SYS_lseek = 478;
+
+    /// <summary>SYS_stat (188) — get file status by pathname.</summary>
+    public const int SYS_stat = 188;
+
+    /// <summary>SYS_fstat (189) — get file status by descriptor.</summary>
+    public const int SYS_fstat = 189;
+
+    /// <summary>SYS_lstat (190) — get file status by pathname without following a symbolic link.</summary>
+    public const int SYS_lstat = 190;
+
+    /// <summary>SYS_unlink (10) — remove a directory entry.</summary>
+    public const int SYS_unlink = 10;
+
+    /// <summary>SYS_rename (128) — change the name of a file.</summary>
+    public const int SYS_rename = 128;
+
+    /// <summary>SYS_mkdir (136) — make a directory.</summary>
+    public const int SYS_mkdir = 136;
+
+    /// <summary>SYS_rmdir (137) — remove a directory.</summary>
+    public const int SYS_rmdir = 137;
 
     /// <summary>SYS_accept (30) — accept a connection on a socket.</summary>
     public const int SYS_accept = 30;

@@ -238,11 +238,17 @@ public static unsafe partial class PayloadKernel
     }
 
     /// <summary>
-    /// Applies the full 11-write credential and filesystem escalation to a process whose kernel
-    /// address is already known. The write set covers eleven fields:
-    /// five uid/gid fields zeroed, authorization id set, two capability quadwords set to all-ones,
-    /// one attribute byte set, and the root and jail directory vnodes pointed at the kernel's own
-    /// root vnode.
+    /// Applies the shell-install credential and filesystem escalation to a process whose kernel
+    /// address is already known. Five uid/gid fields are zeroed (<c>cr_uid</c>, <c>cr_ruid</c>,
+    /// <c>cr_svuid</c>, <c>cr_rgid</c>, <c>cr_svgid</c>). The authorization id is set to the
+    /// value the running firmware accepts for a shell-install worker
+    /// (<see cref="SelectAuthIdForFirmware"/>). Both capability quadwords are set to all-ones,
+    /// the whole thirty-two-byte attribute block is written with byte 0 set to <c>0x80</c> and
+    /// every other byte set to zero, the root directory vnode is pointed at the kernel's own
+    /// root vnode, and the jail directory pointer is cleared to NULL. This is the credential
+    /// surface a shell-install worker on the platform's own launch pipeline carries; it is what
+    /// a promoted title needs to reach <c>/user</c>, <c>/data</c>, and every partition the shell
+    /// already owns.
     /// </summary>
     /// <returns><see langword="true"/> when the credential and filedesc pointers were read
     /// successfully and all writes were issued; <see langword="false"/> if either pointer read
@@ -257,18 +263,55 @@ public static unsafe partial class PayloadKernel
         io.WriteU32(ucred + (ulong)KernelOffsets.UcredUid, 0);
         io.WriteU32(ucred + (ulong)KernelOffsets.UcredRuid, 0);
         io.WriteU32(ucred + (ulong)KernelOffsets.UcredSvuid, 0);
-        io.WriteU32(ucred + (ulong)KernelOffsets.UcredNgroups, 0);
         io.WriteU32(ucred + (ulong)KernelOffsets.UcredRgid, 0);
-        io.WriteU64(ucred + (ulong)KernelOffsets.UcredSceAuthId, 0x4801000000000013);
+        io.WriteU32(ucred + (ulong)KernelOffsets.UcredSvgid, 0);
+        io.WriteU64(ucred + (ulong)KernelOffsets.UcredSceAuthId, SelectAuthIdForFirmware(GetSystemSoftwareVersion()));
         io.WriteU64(ucred + (ulong)KernelOffsets.UcredSceCaps, 0xFFFF_FFFF_FFFF_FFFF);
         io.WriteU64(ucred + (ulong)KernelOffsets.UcredSceCaps + 8, 0xFFFF_FFFF_FFFF_FFFF);
-        byte attr0 = 0x80;
-        io.Write(ucred + (ulong)KernelOffsets.UcredSceAttr0, &attr0, 1);
+        // Write the whole 32-byte cr_sceAttrs block: byte 0 to 0x80, every other byte to 0,
+        // matching the install-service escalation pattern the platform's own launch pipeline
+        // sets on a shell-side install worker.
+        byte* attrs = stackalloc byte[32];
+        for (int i = 0; i < 32; i++) attrs[i] = 0;
+        attrs[0] = 0x80;
+        io.Write(ucred + (ulong)KernelOffsets.UcredSceAttrs, attrs, 32);
         io.WriteU64(fd + (ulong)KernelOffsets.FdRdir, rootvnode);
-        io.WriteU64(fd + (ulong)KernelOffsets.FdJdir, rootvnode);
+        // Jail directory is cleared to NULL. A non-null jail directory keeps the FreeBSD-derived
+        // kernel's is_in_sandbox check firing on every open under an nsfs mount, which refuses
+        // /user and /data with EINVAL regardless of the escalated credential. A NULL pointer here
+        // tells the kernel the process has no jail; the widened root directory then resolves those
+        // paths through the kernel's own root vnode.
+        io.WriteU64(fd + (ulong)KernelOffsets.FdJdir, 0);
 
         return true;
     }
+
+    /// <summary>
+    /// Shellcore-tier authorization identifier the kernel accepts for firmware releases
+    /// before 11.00. The install-service and shell-side APIs read <c>cr_sceAuthID</c> at
+    /// <c>ucred+0x58</c> and permit an install-service call only when the caller's
+    /// identifier is one of the shellcore's own. Firmware 10.01 and earlier expect this
+    /// specific value.
+    /// </summary>
+    private const ulong ShellCoreAuthId = 0x3800000000000010UL;
+
+    /// <summary>
+    /// System-install authorization identifier the kernel accepts for firmware 11.00 and
+    /// later. The install-service surface widened in that release and now expects this
+    /// identifier for the same shell-side APIs the earlier releases granted to the
+    /// shellcore identifier.
+    /// </summary>
+    private const ulong SystemInstallAuthId = 0x4801000000000013UL;
+
+    /// <summary>
+    /// Selects the identifier the running firmware accepts. Firmware major version 11 or
+    /// higher takes <see cref="SystemInstallAuthId"/>; earlier releases take
+    /// <see cref="ShellCoreAuthId"/>. The BCD version word from
+    /// <see cref="GetSystemSoftwareVersion"/> is compared against <c>0x11000000</c> so
+    /// FW 10.01 (<c>0x10010000</c>) selects the shellcore identifier.
+    /// </summary>
+    private static ulong SelectAuthIdForFirmware(uint firmwareBcd)
+        => firmwareBcd >= 0x11000000U ? SystemInstallAuthId : ShellCoreAuthId;
 
     /// <summary>
     /// Walks the process list to locate the process with the given <paramref name="pid"/>, reads
@@ -499,6 +542,49 @@ public static unsafe partial class PayloadKernel
         io.WriteU64(ucred + (ulong)KernelOffsets.UcredPrison, prison);
     }
 
+    /// <summary>Outcome of a <see cref="SetPrisonMountAllow"/> call.</summary>
+    public enum PrisonMountAllowResult
+    {
+        /// <summary>The requested bits were already set in <c>prison0.pr_allow</c>.</summary>
+        AlreadySet,
+
+        /// <summary>The bits were absent and the write succeeded (verified by re-read).</summary>
+        Applied,
+
+        /// <summary>The write ran but a follow-up read did not see the new bits set.</summary>
+        WriteRejected,
+
+        /// <summary>The <c>prison0</c> pointer could not be resolved from the process list.</summary>
+        PrisonNotFound,
+    }
+
+    /// <summary>
+    /// Sets the given bit mask in <c>prison0.pr_allow</c>. The kernel's
+    /// <c>modified_nullfs_mount</c> check reads this bitmask on every <c>nmount</c> with
+    /// <c>fstype=nullfs</c>; without <c>0x100</c> (PR_ALLOW_MOUNT_NULLFS) every nullfs
+    /// mount from an escalated credential returns <c>EPERM</c> regardless of ucred fields.
+    /// The write is idempotent (bits already set are reported without a second write).
+    /// </summary>
+    public static PrisonMountAllowResult SetPrisonMountAllow(uint bits)
+    {
+        ulong prison = GetPrison0();
+        if (prison == 0)
+            return PrisonMountAllowResult.PrisonNotFound;
+
+        var io = new PayloadKernelIo(PayloadEntryPoint.Args);
+        ulong allowAddr = prison + (ulong)KernelOffsets.PrisonPrAllow;
+
+        uint current = io.ReadU32(allowAddr);
+        if ((current & bits) == bits)
+            return PrisonMountAllowResult.AlreadySet;
+
+        io.WriteU32(allowAddr, current | bits);
+        uint verify = io.ReadU32(allowAddr);
+        return (verify & bits) == bits
+            ? PrisonMountAllowResult.Applied
+            : PrisonMountAllowResult.WriteRejected;
+    }
+
     /// <summary>
     /// Reads the process identifier from a proc structure.
     /// </summary>
@@ -574,62 +660,96 @@ public static unsafe partial class PayloadKernel
     }
 
     /// <summary>
-    /// Applies the full 11-write credential and filesystem escalation to a process identified by
-    /// its pid, using the CRT-emitted per-field accessors. Each accessor internally walks the
-    /// allproc list to locate the target process, so no managed allproc traversal is needed.
-    /// Returns <see langword="false"/> if the initial uid write fails (process not found) or if either
-    /// filesystem directory write fails (target exited mid-sequence), <see langword="true"/> otherwise.
+    /// Applies the full credential and filesystem escalation to a process identified by its pid,
+    /// using the CRT-emitted per-field accessors. Twelve writes to the target's ucred and
+    /// filedesc structures: five user and group identifiers zeroed (uid, ruid, svuid, ngroups,
+    /// rgid), the ucred moved into the kernel's root prison so DAC/MAC checks read as fully
+    /// privileged, the root directory vnode pointed at the kernel's own root vnode so path
+    /// resolution starts from the whole file system rather than the per-title sandbox, the
+    /// jail directory pointer cleared to NULL so the FreeBSD-derived kernel's is_in_sandbox
+    /// check stops firing on nsfs opens, the authorization id, both eight-byte halves of the
+    /// capability set filled with 0xFF, and the first attribute byte set to 0x80.
     /// </summary>
+    /// <remarks>
+    /// The prison and directory writes go together: a process whose prison moves to prison0
+    /// but whose rootdir still points at the per-title sandbox root reads the sandbox root
+    /// vnode as no longer wired into a visible mount tree, and every open answers with ENOENT.
+    /// Moving both together lands the process on the kernel root vnode where prison0 lives, so
+    /// absolute paths resolve against the raw file system and <c>/data</c>, <c>/user</c> and
+    /// every other real partition open as themselves.
+    /// </remarks>
     /// <param name="pid">Target process identifier.</param>
     /// <param name="rootvnode">Root vnode pointer (from <see cref="GetRootVnode()"/>).</param>
+    /// <returns><see langword="false"/> when the initial uid write fails (process not found), or
+    /// when either directory write fails (target exited mid-sequence). Every remaining write
+    /// still fires; a non-zero result on a later write reflects the target having exited and is
+    /// treated the same way libc treats an EINTR on a syscall - reported by the return value so
+    /// the caller can retry.</returns>
     public static bool JailbreakByPid(int pid, ulong rootvnode)
     {
         if (CrtSetUcredUid(pid, 0) != 0)
             return false;
         CrtSetUcredRuid(pid, 0);
         CrtSetUcredSvuid(pid, 0);
-        CrtSetUcredNgroups(pid, 0);
         CrtSetUcredRgid(pid, 0);
-        CrtSetUcredAuthid(pid, 0x4801000000000013);
+        CrtSetUcredSvgid(pid, 0);
+        CrtSetUcredPrison(pid, GetPrison0());
+        if (CrtSetProcRootdir(pid, rootvnode) != 0)
+            return false;
+        // Jail directory is cleared to NULL. A non-null jail directory keeps the FreeBSD-derived
+        // kernel's is_in_sandbox check firing on every open under an nsfs mount, which refuses
+        // /user and /data with EINVAL regardless of the escalated credential. A NULL pointer here
+        // tells the kernel the process has no jail; the widened root directory then resolves those
+        // paths through the kernel's own root vnode.
+        if (CrtSetProcJaildir(pid, 0) != 0)
+            return false;
+        CrtSetUcredAuthid(pid, SelectAuthIdForFirmware(GetSystemSoftwareVersion()));
         byte* caps = stackalloc byte[16];
         for (int i = 0; i < 16; i++)
             caps[i] = 0xFF;
-        CrtSetUcredCaps(pid, caps);
-        CrtSetUcredSceAttr0(pid, 0x80);
-        if (CrtSetProcRootdir(pid, rootvnode) != 0)
+        if (CrtSetUcredCaps(pid, caps) != 0)
             return false;
-        if (CrtSetProcJaildir(pid, rootvnode) != 0)
+        byte* attrs = stackalloc byte[32];
+        for (int i = 0; i < 32; i++) attrs[i] = 0;
+        attrs[0] = 0x80;
+        if (CrtSetUcredAttrs(pid, attrs) != 0)
             return false;
         return true;
     }
 
     /// <summary>
-    /// Escapes the filesystem jail and raises the effective uid to root with full capabilities on
-    /// a running process, without touching the prison pointer, the real / saved user or group
-    /// identifiers, the authorisation identifier, or the attribute set. The narrower footprint
-    /// avoids the kernel
-    /// bookkeeping paths that trap after a broader credential rewrite: cr_prison carries a
-    /// reference-counted pointer whose list linkage the kernel walks on later scheduling
-    /// decisions, and swapping it out from under a live process leaves the previous prison's
-    /// process list carrying a dangling entry that panics on the next iterating traversal.
+    /// Applies the full escalation to the daemon's own process, matching what
+    /// <see cref="JailbreakByPid(int, ulong)"/> does for a remote client. Five uid/gid writes,
+    /// a write into the kernel's root prison, the root directory vnode pointed at the kernel's
+    /// own root vnode, the jail directory pointer cleared to NULL, the authorization id
+    /// selected for the running firmware, the full sixteen-byte capability set, and the whole
+    /// thirty-two-byte attribute block.
     /// </summary>
-    /// <remarks>
-    /// Both the root directory and the jail directory are pointed at the kernel's root vnode.
-    /// Setting the jail directory to the root vnode tells the kernel's path-resolution helper
-    /// that the jail boundary coincides with the filesystem root, effectively removing the
-    /// jail constraint. A null jail directory causes a page fault in the kernel's namei path
-    /// when the process exits or performs any path resolution.
-    /// </remarks>
     public static void RaisePrivileges(int pid)
     {
         ulong rootvnode = CrtGetRootVnode();
-        CrtSetProcRootdir(pid, rootvnode);
-        CrtSetProcJaildir(pid, rootvnode);
         CrtSetUcredUid(pid, 0);
+        CrtSetUcredRuid(pid, 0);
+        CrtSetUcredSvuid(pid, 0);
+        CrtSetUcredRgid(pid, 0);
+        CrtSetUcredSvgid(pid, 0);
+        CrtSetUcredPrison(pid, GetPrison0());
+        CrtSetProcRootdir(pid, rootvnode);
+        // Jail directory is cleared to NULL. A non-null jail directory keeps the FreeBSD-derived
+        // kernel's is_in_sandbox check firing on every open under an nsfs mount, which refuses
+        // /user and /data with EINVAL regardless of the escalated credential. A NULL pointer here
+        // tells the kernel the process has no jail; the widened root directory then resolves those
+        // paths through the kernel's own root vnode.
+        CrtSetProcJaildir(pid, 0);
+        CrtSetUcredAuthid(pid, SelectAuthIdForFirmware(GetSystemSoftwareVersion()));
         byte* caps = stackalloc byte[16];
         for (int i = 0; i < 16; i++)
             caps[i] = 0xFF;
         CrtSetUcredCaps(pid, caps);
+        byte* attrs = stackalloc byte[32];
+        for (int i = 0; i < 32; i++) attrs[i] = 0;
+        attrs[0] = 0x80;
+        CrtSetUcredAttrs(pid, attrs);
     }
 
     private static bool MatchName(byte* comm, byte* name, int length)
@@ -700,6 +820,10 @@ public static unsafe partial class PayloadKernel
     [SuppressGCTransition]
     [LibraryImport("libScePosix", EntryPoint = "__sp_kernel_set_ucred_caps")]
     private static partial int CrtSetUcredCaps(int pid, byte* caps);
+
+    [SuppressGCTransition]
+    [LibraryImport("libScePosix", EntryPoint = "__sp_kernel_set_ucred_attrs")]
+    private static partial int CrtSetUcredAttrs(int pid, byte* attrs);
 
     [SuppressGCTransition]
     [LibraryImport("libScePosix", EntryPoint = "__sp_kernel_find_proc_by_comm")]

@@ -256,4 +256,24 @@ public static unsafe partial class SaveDataDialog
     /// <summary>Reports whether the dialog is ready to be shown.</summary>
     [LibraryImport(Lib)]
     public static partial int sceSaveDataDialogIsReadyToDisplay();
+
+    /// <summary>The progress-bar target selector: the default bar in the dialog.</summary>
+    public const int ProgressBarTargetBarDefault = 0;
+
+    /// <summary>The progress-bar type: percentage.</summary>
+    public const int ProgressBarTypePercentage = 0;
+
+    /// <summary>
+    /// Advances the progress bar in a running progress-bar dialog by <paramref name="delta"/>
+    /// percentage points on the bar named by <paramref name="target"/>.
+    /// </summary>
+    [LibraryImport(Lib)]
+    public static partial int sceSaveDataDialogProgressBarInc(int target, uint delta);
+
+    /// <summary>
+    /// Sets the progress bar in a running progress-bar dialog to <paramref name="rate"/> percentage
+    /// points on the bar named by <paramref name="target"/>.
+    /// </summary>
+    [LibraryImport(Lib)]
+    public static partial int sceSaveDataDialogProgressBarSetValue(int target, uint rate);
 }

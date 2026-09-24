@@ -151,6 +151,10 @@
     <DirectPInvoke Include="libSceAgc" />
     <DirectPInvoke Include="libSceAgcDriver" />
     <DirectPInvoke Include="libScePosix" />
+    <!-- Placeholder library name for compat-emitted helpers linked into the app module itself
+         (see SharpProspero.Memory.CpuCache). Never sent to the runtime loader; the link step
+         resolves the entry points against the compat object statically linked with the module. -->
+    <DirectPInvoke Include="libSharpProsperoCompat" />
   </ItemGroup>
 
 </Project>
