@@ -101,6 +101,14 @@ public sealed unsafe class Keyboard : IDisposable
         if (SceResult.Failed(Native.sceKeyboardReadState(_handle, &data)))
             return new KeyboardState(false, KeyModifier.None, KeyboardLed.None, []);
 
+        // A sample marked Intercepted means the system took the keyboard for its own UI (an on-
+        // screen IME, a system dialog). The keys, modifiers and LEDs in that sample are meant for
+        // the system, not for the application; forwarding them would let a user typing into the
+        // IME hit shortcuts in the app behind. Report an empty state so the app sees the keyboard
+        // as idle for the duration of the interception.
+        if (data.Intercepted)
+            return new KeyboardState(data.Connected, KeyModifier.None, KeyboardLed.None, []);
+
         // The count that comes back is never less than one, even with nothing held and even with no
         // keyboard there, and the entry it counts is then a code of zero - which is not a key. Copying
         // it verbatim meant the set of held keys was never empty and asking whether key zero was held

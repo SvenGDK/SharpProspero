@@ -113,11 +113,11 @@ public sealed class TabView : UiElement
         int headerHeight = theme.RowHeight;
         bool rowFocused = ReferenceEquals(focused, this);
         int tabWidth = Bounds.Width / _tabs.Count;
+        bool rtl = theme.IsRtl;
 
         for (int i = 0; i < _tabs.Count; i++)
         {
-            int x = Bounds.X + (i * tabWidth);
-            int width = i == _tabs.Count - 1 ? Bounds.Width - (i * tabWidth) : tabWidth;
+            (int x, int width) = TabRect(i, tabWidth, rtl);
             bool active = i == _selectedIndex;
 
             Color background = active ? (rowFocused ? theme.PanelFocused : theme.Panel) : theme.Background;
@@ -129,13 +129,37 @@ public sealed class TabView : UiElement
             int textY = Bounds.Y + ((headerHeight - theme.LineHeight) / 2);
             theme.DrawText(surface, title, textX, textY, active ? theme.Text : theme.TextMuted);
 
-            // A bar under the active tab marks the page being shown.
-            if (active)
-                surface.FillRect(x, Bounds.Y + headerHeight - 2, width, 2, theme.Accent);
         }
 
+        // The border sits along the bottom edge of every tab; the active tab's 2-pixel accent bar
+        // is drawn LAST so it overpaints the border underneath it and reads as the intended
+        // 2-pixel accent stripe rather than accent-over-border-over-accent.
         surface.FillRect(Bounds.X, Bounds.Y + headerHeight - 1, Bounds.Width, 1, theme.Border);
+        {
+            (int x, int width) = TabRect(_selectedIndex, tabWidth, rtl);
+            surface.FillRect(x, Bounds.Y + headerHeight - 2, width, 2, theme.Accent);
+        }
         SelectedContent?.Draw(surface, theme, focused);
+    }
+
+    // The screen-space rectangle for the tab at logical index <paramref name="i"/>. In RTL the
+    // first tab sits at the visual right and the last at the visual left so the tab strip flows
+    // in the same direction as the surrounding paragraph.
+    private (int X, int Width) TabRect(int i, int tabWidth, bool rtl)
+    {
+        int last = _tabs.Count - 1;
+        if (rtl)
+        {
+            int width = i == last ? Bounds.Width - (last * tabWidth) : tabWidth;
+            int x = i == last ? Bounds.X : Bounds.Right - (i * tabWidth) - width;
+            return (x, width);
+        }
+        else
+        {
+            int x = Bounds.X + (i * tabWidth);
+            int width = i == last ? Bounds.Width - (i * tabWidth) : tabWidth;
+            return (x, width);
+        }
     }
 
     /// <inheritdoc/>

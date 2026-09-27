@@ -50,17 +50,23 @@ public sealed class Label(string text = "") : UiElement
     /// <inheritdoc />
     public override void Draw(Surface surface, UiTheme theme, UiElement? focused)
     {
+        if (Bounds.Width <= 0)
+            return;
         ITextFont font = Resolve(theme);
         Color color = TextColor ?? theme.Text;
         int textWidth = font.MeasureText(Text);
         if (Centered && textWidth <= Bounds.Width)
         {
             font.DrawText(surface, Text, Bounds.X + (Bounds.Width - textWidth) / 2, Bounds.Y, color);
+            return;
         }
-        else if (Bounds.Width > 0)
-        {
-            // Left-aligned, or centred text too wide to centre: clip to the label so it cannot overrun.
-            font.DrawText(surface, TextLayout.Truncate(font, Text, Bounds.Width), Bounds.X, Bounds.Y, color);
-        }
+        // Reading-start alignment: the label anchors to the visual left in LTR and to the
+        // visual right in RTL so it reads in the same direction as the surrounding text. A
+        // label wider than its bounds is truncated first so the anchor computation reflects
+        // the drawn (not the source) width.
+        string shown = TextLayout.Truncate(font, Text, Bounds.Width);
+        int shownWidth = font.MeasureText(shown);
+        int x = theme.IsRtl ? Bounds.Right - shownWidth : Bounds.X;
+        font.DrawText(surface, shown, x, Bounds.Y, color);
     }
 }

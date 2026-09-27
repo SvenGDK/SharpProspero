@@ -28,6 +28,7 @@ public sealed class UiRepeater
 {
     private bool _upHeld, _downHeld, _leftHeld, _rightHeld, _confirmHeld, _cancelHeld;
     private bool _pageUpHeld, _pageDownHeld, _homeHeld, _endHeld;
+    private bool _upStickHeld, _downStickHeld, _leftStickHeld, _rightStickHeld;
     private float _upTimer, _downTimer, _leftTimer, _rightTimer;
 
     /// <summary>How long a direction is held before the first repeat, in seconds. Default 0.4.</summary>
@@ -54,10 +55,19 @@ public sealed class UiRepeater
     public UiInput Update(GamePadState current, float deltaSeconds)
     {
         (float x, float y) = current.LeftStick;
-        bool stickUp = y < -StickThreshold;
-        bool stickDown = y > StickThreshold;
-        bool stickLeft = x < -StickThreshold;
-        bool stickRight = x > StickThreshold;
+        // The held-state uses hysteresis: once the stick has passed the fire threshold, it stays
+        // held until the stick relaxes past a smaller release threshold. Without this a hand that
+        // jitters across the fire threshold on consecutive frames appears to press-release-press
+        // and produces an unrepeated pulse every other frame, bypassing the repeat-rate throttle.
+        float release = StickThreshold * 0.7f;
+        bool stickUp = _upStickHeld ? y < -release : y < -StickThreshold;
+        bool stickDown = _downStickHeld ? y > release : y > StickThreshold;
+        bool stickLeft = _leftStickHeld ? x < -release : x < -StickThreshold;
+        bool stickRight = _rightStickHeld ? x > release : x > StickThreshold;
+        _upStickHeld = stickUp;
+        _downStickHeld = stickDown;
+        _leftStickHeld = stickLeft;
+        _rightStickHeld = stickRight;
 
         bool up = Direction(current.IsPressed(ScePadButton.Up) || stickUp, ref _upHeld, ref _upTimer, deltaSeconds);
         bool down = Direction(current.IsPressed(ScePadButton.Down) || stickDown, ref _downHeld, ref _downTimer, deltaSeconds);
@@ -83,11 +93,14 @@ public sealed class UiRepeater
     {
         _upHeld = _downHeld = _leftHeld = _rightHeld = _confirmHeld = _cancelHeld = false;
         _pageUpHeld = _pageDownHeld = _homeHeld = _endHeld = false;
+        _upStickHeld = _downStickHeld = _leftStickHeld = _rightStickHeld = false;
         _upTimer = _downTimer = _leftTimer = _rightTimer = 0f;
     }
 
     // Fires on the frame the direction is first pressed, then once the initial delay has passed while it
-    // is still held, then every interval after that. At most one repeat is reported per frame.
+    // is still held, then every interval after that. At most one repeat is reported per frame, and a
+    // stall long enough to push the timer well past zero collapses to a single catch-up fire rather
+    // than a burst of accumulated repeats over the following frames.
     private bool Direction(bool held, ref bool wasHeld, ref float timer, float deltaSeconds)
     {
         bool fire = false;
@@ -104,7 +117,10 @@ public sealed class UiRepeater
                 if (timer <= 0f)
                 {
                     fire = true;
-                    timer += RepeatInterval;
+                    // Set the timer to a full interval rather than adding to accumulated debt; a
+                    // GC pause or long stall would otherwise leave the timer deeply negative and
+                    // fire a burst of unwanted repeats over the following normal-dt frames.
+                    timer = RepeatInterval;
                 }
             }
         }

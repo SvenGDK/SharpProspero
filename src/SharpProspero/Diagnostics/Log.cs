@@ -51,7 +51,12 @@ public interface ILogSink
 /// </example>
 public static class Log
 {
+    // The sink list is guarded by a lock so a registration change on one thread never races
+    // with a Write foreach on another. Without this, List's version-checked enumerator throws
+    // InvalidOperationException from Write, contradicting the class contract that logging
+    // never throws.
     private static readonly List<ILogSink> Sinks = [];
+    private static readonly object SinksLock = new();
 
     /// <summary>Messages below this level are dropped. The default is <see cref="LogLevel.Information"/>.</summary>
     public static LogLevel MinimumLevel { get; set; } = LogLevel.Information;
@@ -60,27 +65,46 @@ public static class Log
     public static void AddSink(ILogSink sink)
     {
         ArgumentNullException.ThrowIfNull(sink);
-        Sinks.Add(sink);
+        lock (SinksLock)
+            Sinks.Add(sink);
     }
 
     /// <summary>Removes a previously added destination.</summary>
-    public static void RemoveSink(ILogSink sink) => Sinks.Remove(sink);
+    public static void RemoveSink(ILogSink sink)
+    {
+        lock (SinksLock)
+            Sinks.Remove(sink);
+    }
 
     /// <summary>Removes every destination.</summary>
-    public static void ClearSinks() => Sinks.Clear();
+    public static void ClearSinks()
+    {
+        lock (SinksLock)
+            Sinks.Clear();
+    }
 
     /// <summary>Writes <paramref name="message"/> at <paramref name="level"/> to every sink, if it passes the minimum.</summary>
     public static void Write(LogLevel level, string message)
     {
-        if (level < MinimumLevel || Sinks.Count == 0)
+        if (level < MinimumLevel)
             return;
+        // Snapshot the sinks under the lock so a concurrent AddSink / RemoveSink cannot mutate
+        // the collection while it is being enumerated. The sink calls themselves run outside the
+        // lock so a slow sink never blocks registration changes.
+        ILogSink[] snapshot;
+        lock (SinksLock)
+        {
+            if (Sinks.Count == 0)
+                return;
+            snapshot = Sinks.ToArray();
+        }
         message ??= string.Empty;
-        foreach (ILogSink sink in Sinks)
+        for (int i = 0; i < snapshot.Length; i++)
         {
             // A sink failure must never propagate to the caller; logging is best-effort.
             try
             {
-                sink.Write(level, message);
+                snapshot[i].Write(level, message);
             }
             catch
             {

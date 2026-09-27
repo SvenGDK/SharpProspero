@@ -57,19 +57,32 @@ public sealed class OptionSelector : UiElement
         if (isFocused)
             surface.DrawRect(Bounds.X, Bounds.Y, Bounds.Width, Bounds.Height, theme.Accent);
 
+        bool rtl = theme.IsRtl;
         int textY = CenterTextY(Bounds, theme);
-        theme.DrawClipped(surface, Text, Bounds.X + theme.Padding, textY, theme.Text, Bounds.Width - (2 * theme.Padding));
+        int room = Bounds.Width - (2 * theme.Padding);
 
-        // Drawn with characters the font has. It covers printable text only and folds anything else
-        // to a blank, so the arrows that were here were drawn as two empty cells that still took up
-        // their width.
+        // Truncate FIRST so the anchor uses the drawn width — an untruncated anchor under RTL
+        // would shift an overflowing label left off its intended right edge.
+        string labelShown = TextLayout.Truncate(theme.Font, Text, room);
+        int labelWidth = theme.MeasureText(labelShown);
+        int labelX = rtl ? Bounds.Right - theme.Padding - labelWidth : Bounds.X + theme.Padding;
+        theme.DrawText(surface, labelShown, labelX, textY, theme.Text);
+
+        // Drawn with characters the font has. It covers printable text only and folds anything
+        // else to a blank, so the arrows that were here were drawn as two empty cells that still
+        // took up their width. Both chevrons point AWAY from the value in both directions —
+        // "cycle in both directions" is script-neutral, and matching the Stepper's outward
+        // pattern keeps every chevron widget on a screen consistent under an RTL culture.
         string option = "< " + SelectedOption + " >";
         int optionWidth = theme.MeasureText(option);
-        int optionRoom = Bounds.Right - theme.Padding - (Bounds.X + theme.Padding + theme.MeasureText(Text) + theme.Padding);
+        int optionRoom = rtl
+            ? Bounds.Right - theme.Padding - labelWidth - theme.Padding - (Bounds.X + theme.Padding)
+            : Bounds.Right - theme.Padding - (Bounds.X + theme.Padding + labelWidth + theme.Padding);
         if (optionRoom > 0)
         {
             int shownWidth = optionWidth < optionRoom ? optionWidth : optionRoom;
-            theme.DrawClipped(surface, option, Bounds.Right - theme.Padding - shownWidth, textY, theme.Text, shownWidth);
+            int optionX = rtl ? Bounds.X + theme.Padding : Bounds.Right - theme.Padding - shownWidth;
+            theme.DrawClipped(surface, option, optionX, textY, theme.Text, shownWidth);
         }
     }
 
@@ -92,7 +105,13 @@ public sealed class OptionSelector : UiElement
     private void Move(int delta)
     {
         int count = Options.Count;
-        _selectedIndex = ((_selectedIndex + delta) % count + count) % count;
+        int next = ((_selectedIndex + delta) % count + count) % count;
+        // A single-option selector, or a wrap that lands on the same index, must not fire Changed;
+        // held direction pulses through UiRepeater would otherwise invoke the callback repeatedly
+        // even though the user cannot actually alter the value.
+        if (next == _selectedIndex)
+            return;
+        _selectedIndex = next;
         Changed?.Invoke(_selectedIndex);
     }
 }

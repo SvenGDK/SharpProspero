@@ -42,17 +42,29 @@ public sealed class KeyValueRow(string name, string value = "") : UiElement
         int left = Bounds.X + theme.Padding;
         int right = Bounds.Right - theme.Padding;
 
-        // The name keeps the room it needs; the value takes what is left, shortened to fit.
+        // The name sits on the reading-start side, the value on the reading-end side, so the pair
+        // reads as name-then-value in both directions.
         int nameWidth = font.MeasureText(Name);
-        font.DrawText(surface, Name, left, y, NameColor ?? theme.TextMuted);
-
-        int available = right - (left + nameWidth + theme.Spacing);
-        if (available <= 0)
-            return;
-
-        string shown = TextLayout.Truncate(font, Value, available);
-        int valueWidth = font.MeasureText(shown);
-        font.DrawText(surface, shown, right - valueWidth, y, ValueColor ?? theme.Text);
+        bool rtl = theme.IsRtl;
+        if (rtl)
+        {
+            font.DrawText(surface, Name, right - nameWidth, y, NameColor ?? theme.TextMuted);
+            int available = (right - nameWidth - theme.Spacing) - left;
+            if (available <= 0)
+                return;
+            string shown = TextLayout.Truncate(font, Value, available);
+            font.DrawText(surface, shown, left, y, ValueColor ?? theme.Text);
+        }
+        else
+        {
+            font.DrawText(surface, Name, left, y, NameColor ?? theme.TextMuted);
+            int available = right - (left + nameWidth + theme.Spacing);
+            if (available <= 0)
+                return;
+            string shown = TextLayout.Truncate(font, Value, available);
+            int valueWidth = font.MeasureText(shown);
+            font.DrawText(surface, shown, right - valueWidth, y, ValueColor ?? theme.Text);
+        }
     }
 
     // Every row draws with the theme's font.

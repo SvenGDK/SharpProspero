@@ -90,14 +90,32 @@ public sealed unsafe class TextInputDialog : IDisposable
         // up before its own init, or that init fails.
         CommonDialog.EnsureInitialized();
 
-        // The buffer holds the entered text and must outlive the dialog, so it lives on the unmanaged
-        // heap for the object's lifetime. Room for maxLength characters plus the terminator. The object
-        // takes the module and the buffers before anything that can fail runs, so every way out of the
-        // sequence below gives all of them back.
+        // The buffer holds the entered text and must outlive the dialog, so it lives on the
+        // unmanaged heap for the object's lifetime. Room for maxLength characters plus the
+        // terminator. Load the module and allocate each buffer inside its own step-by-step try so a
+        // later step failing (an OOM in CopyString(placeholder), for example) never orphans the
+        // module or the earlier allocations. Only once every piece is in hand does the object take
+        // ownership; every way out of the setup below then gives all of it back through Dispose.
         int capacity = maxLength + 1;
-        var dialog = new TextInputDialog(
-            SystemModule.Load(SystemModuleId.ImeDialog),
-            AllocString(capacity), CopyString(title), CopyString(placeholder), capacity);
+        SystemModule module = SystemModule.Load(SystemModuleId.ImeDialog);
+        char* buf = null;
+        char* titleBuf = null;
+        char* placeholderBuf = null;
+        try
+        {
+            buf = AllocString(capacity);
+            titleBuf = CopyString(title);
+            placeholderBuf = CopyString(placeholder);
+        }
+        catch
+        {
+            if (placeholderBuf != null) NativeMemory.Free(placeholderBuf);
+            if (titleBuf != null) NativeMemory.Free(titleBuf);
+            if (buf != null) NativeMemory.Free(buf);
+            module.Dispose();
+            throw;
+        }
+        var dialog = new TextInputDialog(module, buf, titleBuf, placeholderBuf, capacity);
         try
         {
             char* buffer = dialog._buffer;

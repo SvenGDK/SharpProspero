@@ -83,21 +83,43 @@ public sealed class Stepper : UiElement
         if (isFocused)
             surface.DrawRect(Bounds.X, Bounds.Y, Bounds.Width, Bounds.Height, theme.Accent);
 
+        bool rtl = theme.IsRtl;
         int textY = CenterTextY(Bounds, theme);
-        theme.DrawClipped(surface, Text, Bounds.X + theme.Padding, textY, theme.Text, Bounds.Width - (2 * theme.Padding));
+        int room = Bounds.Width - (2 * theme.Padding);
 
-        // Drawn with characters the font has: it covers printable text only and folds anything else to
-        // a blank, so both ends were drawn blank and there was no telling a value that can still move
-        // from one that has reached its limit.
-        string left = _value > Minimum ? "<" : " ";
-        string right = _value < Maximum ? ">" : " ";
-        string shown = left + " " + (Format?.Invoke(_value) ?? _value.ToString()) + " " + right;
+        // Truncate FIRST so the anchor computation reflects the drawn width — anchoring by the
+        // full untruncated width would visually shift a truncated RTL label left off its right
+        // anchor by the overflow amount.
+        string labelShown = TextLayout.Truncate(theme.Font, Text, room);
+        int labelWidth = theme.MeasureText(labelShown);
+
+        // Label sits on the reading-start side; the value follows on the reading-end side. In RTL
+        // the label moves to the visual right and the value block to the visual left so the pair
+        // reads in the same order the surrounding paragraph does.
+        int labelX = rtl ? Bounds.Right - theme.Padding - labelWidth : Bounds.X + theme.Padding;
+        theme.DrawText(surface, labelShown, labelX, textY, theme.Text);
+
+        // Drawn with characters the font has: it covers printable text only and folds anything else
+        // to a blank, so both ends were drawn blank and there was no telling a value that can still
+        // move from one that has reached its limit. The visual chevron on the "smaller side" is
+        // "<" in LTR (values grow rightward, so smaller is to the left) and ">" in RTL (values
+        // grow leftward, so smaller is to the right).
+        bool canDecrement = _value > Minimum;
+        bool canIncrement = _value < Maximum;
+        string smallerChev = canDecrement ? (rtl ? ">" : "<") : " ";
+        string largerChev = canIncrement ? (rtl ? "<" : ">") : " ";
+        string leftChev = rtl ? largerChev : smallerChev;
+        string rightChev = rtl ? smallerChev : largerChev;
+        string shown = leftChev + " " + (Format?.Invoke(_value) ?? _value.ToString()) + " " + rightChev;
         int width = theme.MeasureText(shown);
-        int room = Bounds.Right - theme.Padding - (Bounds.X + theme.Padding + theme.MeasureText(Text) + theme.Padding);
-        if (room > 0)
+        int valueRoom = rtl
+            ? Bounds.Right - theme.Padding - labelWidth - theme.Padding - (Bounds.X + theme.Padding)
+            : Bounds.Right - theme.Padding - (Bounds.X + theme.Padding + labelWidth + theme.Padding);
+        if (valueRoom > 0)
         {
-            int shownWidth = width < room ? width : room;
-            theme.DrawClipped(surface, shown, Bounds.Right - theme.Padding - shownWidth, textY, theme.Text, shownWidth);
+            int shownWidth = width < valueRoom ? width : valueRoom;
+            int shownX = rtl ? Bounds.X + theme.Padding : Bounds.Right - theme.Padding - shownWidth;
+            theme.DrawClipped(surface, shown, shownX, textY, theme.Text, shownWidth);
         }
     }
 

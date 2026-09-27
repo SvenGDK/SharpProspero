@@ -1,5 +1,13 @@
 // Prints privilege information for the calling process: authid, capability masks,
 // uid/euid, and jail-directory vnode.
+//
+// The kernel-side reads route through SharpProspero.Payload.Kernel.KernelOffsets: the
+// per-firmware Allproc lookup feeds the process-list walk that PayloadKernel.FindProcessByPid
+// uses, and the firmware-invariant struct field offsets (ProcUcred, UcredSceAuthId,
+// UcredSceCaps, ProcFd, FdJdir) address the ucred and filedesc fields the sample prints.
+// Every firmware whose KernelOffsets.Allproc value is populated (1.00 through 13.60 today)
+// works with no rebuild; a symbol the sample does not need is available through
+// SharpProspero.Payload.Kernel.KernelOffsetTables.For(fw) for a future extension.
 
 using System;
 using SharpProspero.Payload;

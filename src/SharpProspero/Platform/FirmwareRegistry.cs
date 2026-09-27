@@ -60,6 +60,15 @@ public static class FirmwareRegistry
     /// The most recent system version the run-time surfaces were confirmed against. Newer systems are
     /// expected to work by the backward-compatibility rule above; this is the last one actually checked.
     /// </summary>
+    /// <remarks>
+    /// The application-module surface (system libraries loaded by name) was last checked on 10.01.
+    /// The payload-side kernel offset tables in <c>SharpProspero.Payload.Kernel.KernelOffsets</c>
+    /// carry confirmed values for <c>allproc</c>, <c>kernel_pmap_store</c>, <c>security_flags</c>,
+    /// <c>sysents</c>, <c>sysentvec</c> and the invariant structure field offsets through 12.70;
+    /// the unjail-payload boot path (<c>KernelOffsets.IsSupportedForUnjail</c>) accepts every
+    /// firmware in that range because it derives the root vnode at run time from init instead of
+    /// consulting the <c>rootvnode</c> kdata offset, which is unverified for 11.xx and 12.xx.
+    /// </remarks>
     public static FirmwareVersion LastValidatedOn { get; } = FirmwareVersion.FromMajorMinor(10, 1);
 
     /// <summary>

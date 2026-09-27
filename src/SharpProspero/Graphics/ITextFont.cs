@@ -22,6 +22,15 @@ public interface ITextFont
     /// (<paramref name="x"/>, <paramref name="y"/>) at the top-left of the line.
     /// </summary>
     void DrawText(Surface surface, ReadOnlySpan<char> text, int x, int y, Color color);
+
+    /// <summary>
+    /// Whether the font has a renderable glyph for <paramref name="codepoint"/>. Used by a font
+    /// cascade to decide whether to route the codepoint to this tier or fall through to the next.
+    /// The default returns true so existing font implementations keep working; a tier that knows
+    /// its coverage (a bitmap font with a fixed range, a system font backed by libSceFont)
+    /// overrides this to report accurately.
+    /// </summary>
+    bool HasGlyph(int codepoint) => true;
 }
 
 /// <summary>
@@ -44,4 +53,8 @@ public sealed class BitmapTextFont(int scale = 1) : ITextFont
     /// <inheritdoc/>
     public void DrawText(Surface surface, ReadOnlySpan<char> text, int x, int y, Color color)
         => surface.DrawText(text, x, y, Scale, color);
+
+    /// <inheritdoc/>
+    public bool HasGlyph(int codepoint)
+        => codepoint >= BitmapFont.FirstChar && codepoint <= BitmapFont.LastChar;
 }

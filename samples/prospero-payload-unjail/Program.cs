@@ -6,9 +6,17 @@
 // layout an installed title needs. The daemon executes each request in its own namespace and
 // returns the result over the same connection.
 //
-// The kernel addresses and structure offsets are for firmware 10.01. All kernel access routes
-// through the CRT-emitted accessors, which share a single pipe-primitive call chain initialized
-// once during CRT startup from the loader's payload_args block.
+// The kernel addresses and structure field offsets come from the firmware-versioned tables in
+// SharpProspero.Payload.Kernel.KernelOffsets (per-firmware switches for the small subset the
+// daemon consults unconditionally) and SharpProspero.Payload.Kernel.KernelOffsetTables (the full
+// 78-symbol table per firmware for callers that need any other symbol). Both are selected at run
+// time from the value GetSystemSoftwareVersion returns. Every kernel access routes through the
+// CRT-emitted accessors, which share a single pipe-primitive call chain initialized once during
+// CRT startup from the loader's payload_args block. The root vnode is discovered at run time
+// (walking the process list to init and reading its file-descriptor table's root directory) when
+// the running firmware has no verified rootvnode offset on file, so the daemon carries every
+// firmware whose allproc and kernel_pmap_store are recognized by KernelOffsets.IsSupportedForUnjail,
+// which today spans 1.00 through 13.60 across every family in the offset table.
 
 using System;
 using System.Runtime.InteropServices;
@@ -161,6 +169,35 @@ internal static unsafe class Program
             return -1;
         }
         PayloadCrt.Klog("unjail: args ok\n\0"u8);
+
+        // Refuse cleanly on a firmware whose kernel offset tables carry no verified values for
+        // the two lookups the daemon performs unconditionally (allproc for the process-list
+        // walk that the credential escalation and root-vnode discovery both need, and
+        // kernel_pmap_store for the direct-map read that reaches the shell's text section).
+        // A firmware that is recognized but returns zero for either fails this gate the same
+        // way an entirely unrecognized version does. Aborting here prevents the CRT and the
+        // kernel accessors below from reading the wrong quadword against a kdata offset that
+        // does not exist on this system, which on a real console would corrupt kernel memory
+        // instead of failing cleanly.
+        uint fw = PayloadKernel.GetSystemSoftwareVersion();
+        if (!KernelOffsets.IsSupportedForUnjail(fw))
+        {
+            byte* msg = stackalloc byte[48];
+            ReadOnlySpan<byte> prefix = "unjail: unsupported firmware 0x"u8;
+            int i = 0;
+            for (; i < prefix.Length; i++) msg[i] = prefix[i];
+            for (int shift = 28; shift >= 0; shift -= 4)
+            {
+                byte nibble = (byte)((fw >> shift) & 0xF);
+                msg[i++] = nibble < 10 ? (byte)('0' + nibble) : (byte)('A' + (nibble - 10));
+            }
+            msg[i++] = (byte)'\n';
+            msg[i]   = 0;
+            PayloadCrt.Klog(new ReadOnlySpan<byte>(msg, i + 1));
+            PayloadNotification.SendKernelNotification("unjail: unsupported firmware, aborting"u8);
+            return -1;
+        }
+        PayloadCrt.Klog("unjail: firmware supported\n\0"u8);
 
         int ownPid = PayloadProcessControl.getpid();
         if (ownPid <= 0)

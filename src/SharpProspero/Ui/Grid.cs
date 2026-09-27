@@ -91,23 +91,38 @@ public sealed class Grid : UiElement
                 continue;
             row.Add(child);
             if (row.Count == _columns)
-                y = PlaceRow(row, bounds.X, y, cellWidth, colGap, rowGap, theme);
+                y = PlaceRow(row, bounds, y, cellWidth, colGap, rowGap, theme);
         }
         if (row.Count > 0)
-            PlaceRow(row, bounds.X, y, cellWidth, colGap, rowGap, theme);
+            PlaceRow(row, bounds, y, cellWidth, colGap, rowGap, theme);
     }
 
-    private static int PlaceRow(List<UiElement> row, int x, int y, int cellWidth, int colGap, int rowGap, UiTheme theme)
+    private static int PlaceRow(List<UiElement> row, UiRect bounds, int y, int cellWidth, int colGap, int rowGap, UiTheme theme)
     {
         int rowHeight = 0;
         foreach (UiElement child in row)
             rowHeight = Math.Max(rowHeight, child.Measure(cellWidth, theme));
 
-        int cellX = x;
-        foreach (UiElement child in row)
+        bool rtl = theme.IsRtl;
+        if (rtl)
         {
-            child.Arrange(new UiRect(cellX, y, cellWidth, rowHeight), theme);
-            cellX += cellWidth + colGap;
+            // In RTL the first-added child owns the visual-right cell so the reading order matches
+            // the surrounding text flow.
+            int cellX = bounds.Right - cellWidth;
+            foreach (UiElement child in row)
+            {
+                child.Arrange(new UiRect(cellX, y, cellWidth, rowHeight), theme);
+                cellX -= cellWidth + colGap;
+            }
+        }
+        else
+        {
+            int cellX = bounds.X;
+            foreach (UiElement child in row)
+            {
+                child.Arrange(new UiRect(cellX, y, cellWidth, rowHeight), theme);
+                cellX += cellWidth + colGap;
+            }
         }
         row.Clear();
         return y + rowHeight + rowGap;

@@ -97,7 +97,8 @@ public sealed class SplitPanel : UiElement
 
         int usable = Math.Max(0, bounds.Width - gap * (shown - 1));
         int childIndex = 0;
-        int x = bounds.X;
+        bool rtl = theme.IsRtl;
+        int x = rtl ? bounds.Right : bounds.X;
         foreach (UiElement child in _children)
         {
             if (!child.Visible)
@@ -107,15 +108,19 @@ public sealed class SplitPanel : UiElement
             if (childIndex == shown - 1)
             {
                 // The last visible child takes whatever is left, so a rounding shortfall never
-                // opens a gap at the right edge of the panel.
-                w = bounds.Right - x;
+                // opens a gap at the far edge — the right edge in LTR, the left edge in RTL.
+                w = rtl ? x - bounds.X : bounds.Right - x;
             }
             else
             {
                 w = totalWeight == 0 ? 0 : usable * shownWeights[childIndex] / totalWeight;
             }
-            child.Arrange(new UiRect(x, bounds.Y, w, bounds.Height), theme);
-            x += w + gap;
+            int childX = rtl ? x - w : x;
+            child.Arrange(new UiRect(childX, bounds.Y, w, bounds.Height), theme);
+            if (rtl)
+                x -= w + gap;
+            else
+                x += w + gap;
             childIndex++;
         }
     }

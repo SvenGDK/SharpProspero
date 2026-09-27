@@ -64,13 +64,17 @@ public sealed class Carousel : UiElement
         int tileWidth = (Bounds.Width - 2 * gap) / 3;
         int counterHeight = theme.LineHeight;
         int tileHeight = Bounds.Height - counterHeight - theme.Spacing;
+        bool rtl = theme.IsRtl;
 
         for (int offset = -1; offset <= 1; offset++)
         {
             if (count == 1 && offset != 0)
                 continue;
             int index = ((_index + offset) % count + count) % count;
-            int tileX = Bounds.X + (offset + 1) * (tileWidth + gap);
+            // In RTL the previous-item tile appears on the visual right and the next-item tile on
+            // the visual left so the strip flows in the same direction the language reads.
+            int slot = rtl ? -offset : offset;
+            int tileX = Bounds.X + (slot + 1) * (tileWidth + gap);
             bool middle = offset == 0;
 
             Color fill = middle ? (isFocused ? theme.PanelFocused : theme.Panel) : theme.Panel;

@@ -240,8 +240,15 @@ public readonly unsafe partial struct Surface
             return;
         }
 
+        // Compute the right/bottom extents in long so an int-overflowing width or height clamps to
+        // the surface bounds instead of wrapping negative and silently dropping the whole blend.
+        long xEnd = (long)x + width;
+        long yEnd = (long)y + height;
         int x0 = Math.Max(0, x), y0 = Math.Max(0, y);
-        int x1 = Math.Min(Width, x + width), y1 = Math.Min(Height, y + height);
+        int x1 = xEnd > Width ? Width : (int)xEnd;
+        int y1 = yEnd > Height ? Height : (int)yEnd;
+        if (x1 <= x0 || y1 <= y0)
+            return;
         uint rgb = color.Value & 0x00FFFFFFu;
         byte alpha = color.A;
         for (int py = y0; py < y1; py++)

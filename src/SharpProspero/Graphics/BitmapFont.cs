@@ -15,8 +15,11 @@ public static class BitmapFont
     /// <summary>Glyph cell width and height, in pixels, before scaling.</summary>
     public const int GlyphSize = 8;
 
-    private const int FirstChar = 0x20;
-    private const int LastChar = 0x7F;
+    /// <summary>Lowest ASCII codepoint the built-in glyph table carries.</summary>
+    public const int FirstChar = 0x20;
+
+    /// <summary>Highest ASCII codepoint the built-in glyph table carries.</summary>
+    public const int LastChar = 0x7F;
 
     // Eight bytes per glyph, one row each, ordered from character 0x20.
     private static ReadOnlySpan<byte> Data =>

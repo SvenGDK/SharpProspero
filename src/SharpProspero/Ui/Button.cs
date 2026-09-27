@@ -36,8 +36,21 @@ public sealed class Button(string text, Action? activated = null) : UiElement
         surface.FillRect(Bounds.X, Bounds.Y, Bounds.Width, Bounds.Height, isFocused ? theme.PanelFocused : theme.Panel);
         if (isFocused)
             surface.DrawRect(Bounds.X, Bounds.Y, Bounds.Width, Bounds.Height, theme.Accent);
-        theme.DrawClipped(surface, Text, Bounds.X + theme.Padding, CenterTextY(Bounds, theme),
-            Enabled ? theme.Text : theme.TextMuted, Bounds.Width - (2 * theme.Padding));
+        int room = Bounds.Width - (2 * theme.Padding);
+        Color color = Enabled ? theme.Text : theme.TextMuted;
+        int textY = CenterTextY(Bounds, theme);
+        if (theme.IsRtl)
+        {
+            // The label anchors to the visual right so the button reads with the surrounding
+            // right-to-left content instead of pulling the eye across the row.
+            string shown = TextLayout.Truncate(theme.Font, Text, room);
+            int shownWidth = theme.MeasureText(shown);
+            theme.DrawText(surface, shown, Bounds.Right - theme.Padding - shownWidth, textY, color);
+        }
+        else
+        {
+            theme.DrawClipped(surface, Text, Bounds.X + theme.Padding, textY, color, room);
+        }
     }
 
     /// <inheritdoc />

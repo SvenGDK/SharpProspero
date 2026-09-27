@@ -76,13 +76,17 @@ public readonly record struct UiInput(bool Up, bool Down, bool Left, bool Right,
         (float curX, float curY) = current.LeftStick;
         (float prevX, float prevY) = previous.LeftStick;
 
-        // A stick pulse fires when the stick crosses past the threshold in a direction it was not past
-        // last frame. The user has to release the stick back inside the threshold before the same
-        // direction fires again, which matches how the d-pad edge works.
-        bool stickUp = curY < -stickThreshold && prevY >= -stickThreshold;
-        bool stickDown = curY > stickThreshold && prevY <= stickThreshold;
-        bool stickLeft = curX < -stickThreshold && prevX >= -stickThreshold;
-        bool stickRight = curX > stickThreshold && prevX <= stickThreshold;
+        // A stick pulse fires when the stick crosses past the fire threshold, and to fire again the
+        // stick must first return past the smaller release threshold. Without this hysteresis a hand
+        // that jitters across the fire threshold on consecutive frames (say between -0.66 and -0.64
+        // for a 0.65 threshold) re-arms the previous-frame test and fires a direction pulse on every
+        // crossing. The release threshold sits at 70% of the fire threshold, so a small tremor
+        // inside the deadzone never re-arms.
+        float releaseThreshold = stickThreshold * 0.7f;
+        bool stickUp = curY < -stickThreshold && prevY > -releaseThreshold;
+        bool stickDown = curY > stickThreshold && prevY < releaseThreshold;
+        bool stickLeft = curX < -stickThreshold && prevX > -releaseThreshold;
+        bool stickRight = curX > stickThreshold && prevX < releaseThreshold;
 
         return new UiInput(
             Up: Edge(ScePadButton.Up) || stickUp,

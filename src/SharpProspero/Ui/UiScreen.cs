@@ -85,7 +85,19 @@ public sealed class UiScreen
     {
         Root.Arrange(area, Theme);
         _focusables.Clear();
-        Root.CollectFocusables(_focusables);
+        // A root marked hidden takes no part in layout, drawing or focus per UiElement.Visible's
+        // contract; skip focus collection so focus/activate cannot reach an invisible tree.
+        if (Root.Visible)
+            Root.CollectFocusables(_focusables);
+        // A container that just closed a modal (ModalHost) can hand back the element focus should
+        // snap to; honour it when it is in the current focusables. Otherwise the usual "keep the
+        // current focus or take the first focusable" rule runs.
+        UiElement? restore = Root.PopFocusRestoreCandidate();
+        if (restore is not null && _focusables.Contains(restore))
+        {
+            Focused = restore;
+            return;
+        }
         if (Focused is null || !_focusables.Contains(Focused))
             Focused = _focusables.Count > 0 ? _focusables[0] : null;
     }
@@ -107,8 +119,15 @@ public sealed class UiScreen
             return;
         }
 
+        // Cancel is offered to the root's cancel-interceptor before the screen's own Cancelled
+        // callback runs, so a ModalHost with an open modal absorbs the press and closes only the
+        // modal — the screen behind must not pop.
         if (input.Cancel)
+        {
+            if (Root.HandleCancel())
+                return;
             Cancelled?.Invoke();
+        }
     }
 
     /// <summary>Draws the control tree, highlighting the focused control.</summary>

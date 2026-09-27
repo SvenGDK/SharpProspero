@@ -161,10 +161,10 @@ public static unsafe class PayloadShellCoreDataMountPatch
         //        textStart = *(segments + 0x08)     // segment[0].addr = text base VA
         //        textSize  = *(segments + 0x10)     // segment[0].size in bytes
         //
-        //    This is the exact layout the loader source that ships with the payload SDK
-        //    reads to widen the eboot segments for dlsym on 5.00+. Reading SharedObject
-        //    directly at +0x10 was a PS4-era libhijacker shape that does not survive on
-        //    the PS5 struct layout the loader itself uses.
+        //    This is the exact layout the SharedObject entry publishes to the loader for
+        //    dlsym widening from firmware 5.00 onward. Reading SharedObject directly at
+        //    +0x10 answers with a stale field on the current struct layout, so the walk
+        //    routes through p_dynlib and the segments array instead.
         int dynlibOffset = KernelOffsets.ProcDynlib(firmwareVersion);
         if (dynlibOffset < 0)
             return new Result(0, false, Reason.ShellCoreModuleBaseNotFound, 0, 0);

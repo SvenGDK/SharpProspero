@@ -46,20 +46,32 @@ public sealed class TextBox(string label, string text = "", string placeholder =
         if (isFocused)
             surface.DrawRect(Bounds.X, Bounds.Y, Bounds.Width, Bounds.Height, theme.Accent);
 
+        bool rtl = theme.IsRtl;
         int textY = CenterTextY(Bounds, theme);
-        int labelWidth = theme.MeasureText(Label);
-        theme.DrawClipped(surface, Label, Bounds.X + theme.Padding, textY, theme.Text, Bounds.Width - (2 * theme.Padding));
+        int room = Bounds.Width - (2 * theme.Padding);
 
-        // The value takes the room left after the label and is shortened to fit, so a long path never
-        // overwrites the label or spills off the field.
+        // Truncate FIRST so the anchor uses the drawn width — anchoring by the untruncated width
+        // under RTL would visually shift an overflowing label left off its intended right edge.
+        string labelShown = TextLayout.Truncate(theme.Font, Label, room);
+        int labelWidth = theme.MeasureText(labelShown);
+
+        // Label sits on the reading-start side (visual left in LTR, visual right in RTL); the
+        // value follows on the reading-end side, shortened to whatever room is left so a long
+        // path never overwrites the label or spills off the field.
+        int labelX = rtl ? Bounds.Right - theme.Padding - labelWidth : Bounds.X + theme.Padding;
+        theme.DrawText(surface, labelShown, labelX, textY, theme.Text);
+
         bool empty = string.IsNullOrEmpty(Text);
         string shown = empty ? Placeholder : Text;
         int shownWidth = theme.MeasureText(shown);
-        int room = Bounds.Right - theme.Padding - (Bounds.X + theme.Padding + labelWidth + theme.Spacing);
-        if (room > 0)
+        int valueRoom = rtl
+            ? (Bounds.Right - theme.Padding - labelWidth - theme.Spacing) - (Bounds.X + theme.Padding)
+            : Bounds.Right - theme.Padding - (Bounds.X + theme.Padding + labelWidth + theme.Spacing);
+        if (valueRoom > 0)
         {
-            int drawWidth = shownWidth < room ? shownWidth : room;
-            theme.DrawClipped(surface, shown, Bounds.Right - theme.Padding - drawWidth, textY,
+            int drawWidth = shownWidth < valueRoom ? shownWidth : valueRoom;
+            int drawX = rtl ? Bounds.X + theme.Padding : Bounds.Right - theme.Padding - drawWidth;
+            theme.DrawClipped(surface, shown, drawX, textY,
                 empty ? theme.TextMuted : theme.Text, drawWidth);
         }
     }

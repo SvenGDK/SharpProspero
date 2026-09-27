@@ -81,10 +81,18 @@ public sealed class RadioGroup : UiElement
         if (isFocused)
             surface.DrawRect(Bounds.X, Bounds.Y, Bounds.Width, Bounds.Height, theme.Accent);
 
+        bool rtl = theme.IsRtl;
         int rowHeight = theme.RowHeight;
         int radius = Math.Max(3, theme.LineHeight / 2 - 2);
-        int dotX = Bounds.X + theme.Padding + radius;
-        int textX = Bounds.X + theme.Padding + (2 * radius) + theme.Padding;
+
+        // The dot sits on the reading-start side of the row (the visual right in RTL) so the
+        // choice indicator appears where the eye starts scanning each line.
+        int dotX = rtl
+            ? Bounds.Right - theme.Padding - radius
+            : Bounds.X + theme.Padding + radius;
+        int textLeft = rtl ? Bounds.X + theme.Padding : Bounds.X + theme.Padding + (2 * radius) + theme.Padding;
+        int textRight = rtl ? Bounds.Right - theme.Padding - (2 * radius) - theme.Padding : Bounds.Right - theme.Padding;
+        int textRoom = Math.Max(0, textRight - textLeft);
 
         for (int i = 0; i < _options.Count; i++)
         {
@@ -93,7 +101,18 @@ public sealed class RadioGroup : UiElement
             surface.DrawCircle(dotX, dotY, radius, theme.Text);
             if (i == _selectedIndex)
                 surface.FillCircle(dotX, dotY, radius - 3, theme.Accent);
-            theme.DrawClipped(surface, _options[i], textX, rowY + ((rowHeight - theme.LineHeight) / 2), theme.Text, Bounds.Right - theme.Padding - textX);
+
+            int textY = rowY + ((rowHeight - theme.LineHeight) / 2);
+            if (rtl)
+            {
+                string shown = TextLayout.Truncate(theme.Font, _options[i], textRoom);
+                int shownWidth = theme.MeasureText(shown);
+                theme.DrawText(surface, shown, textRight - shownWidth, textY, theme.Text);
+            }
+            else
+            {
+                theme.DrawClipped(surface, _options[i], textLeft, textY, theme.Text, textRoom);
+            }
         }
     }
 }

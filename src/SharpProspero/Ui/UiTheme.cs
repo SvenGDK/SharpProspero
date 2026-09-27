@@ -1,6 +1,7 @@
 // SharpProspero - a C# SDK for on-device application modules.
 // Copyright (C) 2026 SvenGDK
 
+using SharpProspero.Globalization;
 using SharpProspero.Graphics;
 using System;
 
@@ -34,8 +35,12 @@ public sealed class UiTheme
     /// <summary>A thin separator or track color.</summary>
     public Color Border { get; init; } = Color.FromRgb(70, 74, 88);
 
-    /// <summary>The scale the built-in bitmap text is drawn at (the 8-pixel font times this).</summary>
-    public int TextScale { get; init; } = 2;
+    /// <summary>
+    /// The scale the built-in bitmap text is drawn at (the 8-pixel font times this). Settable so a
+    /// shell can apply a new value from settings and call <see cref="ClearFontCache"/> to rebuild
+    /// the default bitmap font at the new size without allocating a fresh theme.
+    /// </summary>
+    public int TextScale { get; set; } = 2;
 
     /// <summary>The gap left inside a control before its text, and between stacked controls.</summary>
     public int Padding { get; init; } = 10;
@@ -46,16 +51,26 @@ public sealed class UiTheme
     private ITextFont? _font;
 
     /// <summary>
-    /// The font every control measures and draws its text with. It defaults to the built-in bitmap text
-    /// at <see cref="TextScale"/>, so an interface that sets nothing looks exactly as it did before; set
-    /// a <c>SystemFont</c> or <c>TrueTypeFont</c> here for crisp antialiased text. The default is cached
-    /// for the theme's life. The interface draws on one thread, so no locking is needed.
+    /// The font every control measures and draws its text with. It defaults to the built-in bitmap
+    /// text at <see cref="TextScale"/>, so an interface that sets nothing looks exactly as it did
+    /// before; set a <c>SystemFont</c> or <c>TrueTypeFont</c> here for crisp antialiased text. The
+    /// default is cached for the theme's life. The setter is exposed so a shell can swap the font
+    /// at runtime (a text-scale change from settings, a language change that needs a wider glyph
+    /// coverage) without rebuilding every widget. The interface draws on one thread, so no locking
+    /// is needed.
     /// </summary>
     public ITextFont Font
     {
         get => _font ??= new BitmapTextFont(TextScale);
-        init => _font = value;
+        set => _font = value;
     }
+
+    /// <summary>
+    /// Clears the cached default bitmap font so the next <see cref="Font"/> read rebuilds it at the
+    /// current <see cref="TextScale"/>. Use it after a settings change that alters the scale but
+    /// does not carry a new <see cref="Font"/> assignment.
+    /// </summary>
+    public void ClearFontCache() => _font = null;
 
     /// <summary>The width, in pixels, that <paramref name="text"/> occupies in the theme font.</summary>
     public int MeasureText(ReadOnlySpan<char> text) => Font.MeasureText(text);
@@ -81,6 +96,17 @@ public sealed class UiTheme
 
     /// <summary>The height of a control that holds a single line of text, with padding above and below.</summary>
     public int RowHeight => LineHeight + Padding;
+
+    /// <summary>
+    /// The paragraph direction the interface lays out in. It follows the ambient culture, so a
+    /// language change swaps the layout on the next frame without touching any widget. Read it in
+    /// a container's <c>Arrange</c> or a widget's <c>Draw</c> to mirror horizontal placement for
+    /// right-to-left scripts.
+    /// </summary>
+    public TextDirection Direction => Culture.Current.Direction;
+
+    /// <summary>Shortcut for <c>Direction == TextDirection.Rtl</c>.</summary>
+    public bool IsRtl => Culture.Current.Direction == TextDirection.Rtl;
 
     /// <summary>A dark theme suitable for the console.</summary>
     public static UiTheme Default => new();

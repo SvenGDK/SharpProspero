@@ -58,6 +58,22 @@ public abstract class UiElement
     /// </summary>
     internal virtual void Arrange(UiRect bounds, UiTheme theme) => Bounds = bounds;
 
+    /// <summary>
+    /// Consulted by the screen when the user presses cancel and the focused control did not use it.
+    /// A container overrides this to close a modal, dismiss a popup or otherwise absorb the press
+    /// before the screen fires its own <c>Cancelled</c> callback. Default: the input is not used, so
+    /// the screen's cancel path runs (going back one screen).
+    /// </summary>
+    internal virtual bool HandleCancel() => false;
+
+    /// <summary>
+    /// Consulted by the screen right after <see cref="CollectFocusables"/> to hand back a specific
+    /// element focus should snap to. A container overrides this to reinstate the pre-modal focus
+    /// once the modal has closed. Default: no override, so the screen's usual "keep focus or take
+    /// the first focusable" rule applies.
+    /// </summary>
+    internal virtual UiElement? PopFocusRestoreCandidate() => null;
+
     /// <summary>Vertically centers a single line of the theme font's text within <paramref name="bounds"/>.</summary>
     private protected static int CenterTextY(UiRect bounds, UiTheme theme)
         => bounds.Y + (bounds.Height - theme.LineHeight) / 2;

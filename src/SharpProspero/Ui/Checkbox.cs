@@ -36,8 +36,38 @@ public sealed class Checkbox(string text, bool @checked = false, Action<bool>? c
         surface.FillRect(Bounds.X, Bounds.Y, Bounds.Width, Bounds.Height, isFocused ? theme.PanelFocused : theme.Panel);
         if (isFocused)
             surface.DrawRect(Bounds.X, Bounds.Y, Bounds.Width, Bounds.Height, theme.Accent);
-        string line = (Checked ? "[X] " : "[ ] ") + Text;
-        theme.DrawClipped(surface, line, Bounds.X + theme.Padding, CenterTextY(Bounds, theme), theme.Text, Bounds.Width - (2 * theme.Padding));
+        int textY = CenterTextY(Bounds, theme);
+        int room = Bounds.Width - (2 * theme.Padding);
+
+        // The state indicator and the label draw separately so a label that overflows the row is
+        // truncated on its own, leaving the mark intact on either side. A merged string would
+        // let the trailing-ellipsis truncation strip the mark in RTL, where the indicator sits
+        // at the reading-end of the concatenated line.
+        string mark = Checked ? "[X]" : "[ ]";
+        int markWidth = theme.MeasureText(mark);
+        int markGap = theme.Padding / 2;
+        int labelRoom = Math.Max(0, room - markWidth - markGap);
+        if (theme.IsRtl)
+        {
+            // The mark sits on the reading-start side of the row (the visual right in RTL) and
+            // the label runs to its left, keeping the mark under the eye that starts scanning.
+            int markX = Bounds.Right - theme.Padding - markWidth;
+            theme.DrawText(surface, mark, markX, textY, theme.Text);
+            if (labelRoom > 0)
+            {
+                string shown = TextLayout.Truncate(theme.Font, Text, labelRoom);
+                int shownWidth = theme.MeasureText(shown);
+                theme.DrawText(surface, shown, markX - markGap - shownWidth, textY, theme.Text);
+            }
+        }
+        else
+        {
+            theme.DrawText(surface, mark, Bounds.X + theme.Padding, textY, theme.Text);
+            if (labelRoom > 0)
+            {
+                theme.DrawClipped(surface, Text, Bounds.X + theme.Padding + markWidth + markGap, textY, theme.Text, labelRoom);
+            }
+        }
     }
 
     /// <inheritdoc />

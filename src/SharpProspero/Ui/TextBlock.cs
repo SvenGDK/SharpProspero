@@ -17,8 +17,14 @@ public sealed class TextBlock(string text = "") : UiElement
     /// <summary>The text to show. Line breaks start a new line; the rest wraps to the width.</summary>
     public string Text { get; set; } = text ?? "";
 
-    /// <summary>Where each line sits within the width. Default <see cref="TextAlignment.Left"/>.</summary>
-    public TextAlignment Alignment { get; set; } = TextAlignment.Left;
+    /// <summary>
+    /// Where each line sits within the width. The default is <see cref="TextAlignment.Start"/>,
+    /// which resolves to the reading-start edge under the current culture — the visual left in a
+    /// left-to-right paragraph, the visual right in a right-to-left one. A caller that wants a
+    /// direction-independent anchor sets <see cref="TextAlignment.Left"/>, <see cref="TextAlignment.Center"/>
+    /// or <see cref="TextAlignment.Right"/>.
+    /// </summary>
+    public TextAlignment Alignment { get; set; } = TextAlignment.Start;
 
     /// <summary>The text color, or null to use the theme's text color.</summary>
     public Color? TextColor { get; set; }

@@ -16,8 +16,9 @@ namespace SharpProspero.Platform;
 public static unsafe class Notification
 {
     /// <summary>
-    /// Shows a notification with <paramref name="message"/>. The message is trimmed to what the
-    /// request holds (1023 characters).
+    /// Shows a notification with <paramref name="message"/>. When the UTF-8 encoding of the message
+    /// exceeds what the request holds (1023 bytes plus a terminator), the text is truncated at the
+    /// last complete character that still fits.
     /// </summary>
     /// <exception cref="ProsperoException">The request was refused.</exception>
     public static void Show(string message)
@@ -32,8 +33,18 @@ public static unsafe class Notification
         for (int i = 0; i < 16; i++)
             request.Target[i] = 0xFF;
 
-        int written = Encoding.UTF8.GetBytes(message, new Span<byte>(request.Message, 1023));
-        request.Message[written] = 0;
+        // Encoder.Convert stops at the destination limit rather than throwing, and never splits a
+        // multi-byte character or a surrogate pair, so a Japanese or emoji message longer than the
+        // request holds is truncated at the last complete character that still fits.
+        Encoder encoder = Encoding.UTF8.GetEncoder();
+        encoder.Convert(
+            message.AsSpan(),
+            new Span<byte>(request.Message, 1023),
+            flush: true,
+            out _,
+            out int bytesUsed,
+            out _);
+        request.Message[bytesUsed] = 0;
 
         SceResult.ThrowIfFailed(
             KernelNotification.sceKernelSendNotificationRequest(

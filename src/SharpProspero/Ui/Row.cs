@@ -60,16 +60,27 @@ public sealed class Row : UiElement
         if (shown == 0)
             return;
 
-        int index = 0, x = bounds.X;
+        bool rtl = theme.IsRtl;
+        int index = 0;
+        int x = rtl ? bounds.Right : bounds.X;
         foreach (UiElement child in _children)
         {
             if (!child.Visible)
                 continue;
 
-            // The last column takes whatever is left, so rounding never leaves a gap at the edge.
-            int width = index == shown - 1 ? bounds.Right - x : columnWidth;
-            child.Arrange(new UiRect(x, bounds.Y, width, bounds.Height), theme);
-            x += width + gap;
+            // The last logical column takes whatever is left, so rounding never leaves a gap at the
+            // far edge. In RTL that far edge is the left one — the same "abut the boundary" rule
+            // just mirrored.
+            int width = index == shown - 1
+                ? (rtl ? x - bounds.X : bounds.Right - x)
+                : columnWidth;
+
+            int childX = rtl ? x - width : x;
+            child.Arrange(new UiRect(childX, bounds.Y, width, bounds.Height), theme);
+            if (rtl)
+                x -= width + gap;
+            else
+                x += width + gap;
             index++;
         }
     }

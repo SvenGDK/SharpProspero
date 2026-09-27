@@ -82,6 +82,13 @@ public sealed unsafe class Mouse : IDisposable
         if (read < 0)
             return _last = new MouseState(false, MouseButton.None, 0, 0, 0, 0);
 
+        // A sample marked Intercepted is the system driving the pointer for its own UI. Its
+        // deltas, buttons, wheel and tilt are meant for the system, not for the application; the
+        // cached last-real-sample is what the app should keep seeing until real samples resume.
+        // Do not update _last, and never return the intercepted sample's state.
+        if ((data.Buttons & MouseButton.Intercepted) != 0)
+            return _last with { DeltaX = 0, DeltaY = 0, Wheel = 0, Tilt = 0 };
+
         return _last = new MouseState(
             data.Connected, data.Buttons, data.XAxis, data.YAxis, data.Wheel, data.Tilt);
     }

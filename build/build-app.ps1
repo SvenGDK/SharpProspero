@@ -288,13 +288,12 @@ New-Item -ItemType Directory -Force -Path $moduleFolder | Out-Null
     /nologo
 if ($LASTEXITCODE -ne 0) { throw "Link failed." }
 
-# 4. Gather the module's metadata and any modules it ships with.
-foreach ($folder in @("sce_sys", "sce_module")) {
+# 4. Gather the module's metadata, any modules it ships with, and the app-owned data folders
+# (localization strings, per-app resources). Every folder on this list is cleared in the output
+# before the copy so a folder the project stopped supplying does not linger from a previous build.
+foreach ($folder in @("sce_sys", "sce_module", "strings")) {
     $source = Join-Path $projectDir $folder
     $destination = Join-Path $moduleFolder $folder
-    # Clear whatever a previous build left before deciding whether there is anything to gather. Doing
-    # it the other way round left a folder the project no longer supplies sitting in the output for
-    # good, so a module gathered once shipped in every later build however old it had become.
     if (Test-Path $destination) { Remove-Item -Recurse -Force $destination }
     if (-not (Test-Path $source)) { continue }
     Copy-Item -Recurse -Force $source $destination

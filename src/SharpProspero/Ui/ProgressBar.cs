@@ -33,6 +33,11 @@ public sealed class ProgressBar : UiElement
         surface.FillRect(Bounds.X, Bounds.Y, Bounds.Width, Bounds.Height, theme.Border);
         int fill = (int)(Bounds.Width * _value + 0.5f);
         if (fill > 0)
-            surface.FillRect(Bounds.X, Bounds.Y, fill, Bounds.Height, FillColor ?? theme.Accent);
+        {
+            // In RTL the bar grows from the visual right toward the visual left, so a full bar
+            // reads consistently with the surrounding right-to-left flow.
+            int x = theme.IsRtl ? Bounds.Right - fill : Bounds.X;
+            surface.FillRect(x, Bounds.Y, fill, Bounds.Height, FillColor ?? theme.Accent);
+        }
     }
 }

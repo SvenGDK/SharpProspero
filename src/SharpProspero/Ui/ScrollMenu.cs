@@ -106,29 +106,82 @@ public sealed class ScrollMenu : UiElement
 
         // Arrow keys try to move focus; when there is no focus target in that direction, they fall back
         // to a plain content scroll so a menu with more rows than focusable controls (a status panel with
-        // one action button) is still fully reachable. At the edge of both, the input escapes so focus
-        // can move to a neighbor outside the window.
-        int row = Spacing >= 0 ? Math.Max(1, Spacing) : theme.RowHeight;
+        // one action button) is still fully reachable. The fallback step is one row's height — not the
+        // inter-control gap, which would leave a long panel unreadable at a few pixels per press. At the
+        // edge of both, the input escapes so focus can move to a neighbor outside the window.
+        int row = theme.RowHeight;
         if (input.Up)
-            return MoveFocus(-1, theme) || ScrollBy(-row, theme);
+            return MoveFocus(-1, theme) || ScrollByAndReanchor(-row, theme);
         if (input.Down)
-            return MoveFocus(+1, theme) || ScrollBy(+row, theme);
+            return MoveFocus(+1, theme) || ScrollByAndReanchor(+row, theme);
 
         // Page keys jump focus by a window's worth of controls, then fall back to a content scroll for
         // menus where nothing focusable sits far enough away.
         if (input.PageUp)
-            return PageFocus(-ViewHeight, theme) || ScrollBy(-ViewHeight, theme);
+            return PageFocus(-ViewHeight, theme) || ScrollByAndReanchor(-ViewHeight, theme);
         if (input.PageDown)
-            return PageFocus(+ViewHeight, theme) || ScrollBy(+ViewHeight, theme);
+            return PageFocus(+ViewHeight, theme) || ScrollByAndReanchor(+ViewHeight, theme);
 
         // Home and end jump focus to the extremes, then fall back to a scroll when focus was already
         // there.
         if (input.Home)
-            return JumpFocus(first: true, theme) || ScrollTo(0, theme);
+            return JumpFocus(first: true, theme) || ScrollToAndReanchor(0, theme);
         if (input.End)
-            return JumpFocus(first: false, theme) || ScrollTo(MaxScroll, theme);
+            return JumpFocus(first: false, theme) || ScrollToAndReanchor(MaxScroll, theme);
 
         return false;
+    }
+
+    // Scrolls by the given delta and, if the focused child is now outside the window, hands focus to
+    // the closest still-visible focusable in the scroll direction. Prevents the "focus pinned on a
+    // scrolled-off button" defect where confirming the menu targets a control the user cannot see.
+    private bool ScrollByAndReanchor(int delta, UiTheme theme)
+    {
+        if (!ScrollBy(delta, theme))
+            return false;
+        ReanchorFocusToVisible(delta, theme);
+        return true;
+    }
+
+    private bool ScrollToAndReanchor(int offset, UiTheme theme)
+    {
+        int direction = offset >= _scroll ? +1 : -1;
+        if (!ScrollTo(offset, theme))
+            return false;
+        ReanchorFocusToVisible(direction, theme);
+        return true;
+    }
+
+    private void ReanchorFocusToVisible(int direction, UiTheme theme)
+    {
+        if (_focusIndex < 0 || _focusIndex >= _tops.Count)
+            return;
+        int focusedTop = _tops[_focusIndex];
+        int focusedHeight = _children[_focusIndex].Visible
+            ? _children[_focusIndex].Measure(Bounds.Width, theme)
+            : 0;
+        bool visible = focusedTop >= _scroll && focusedTop + focusedHeight <= _scroll + ViewHeight;
+        if (visible)
+            return;
+
+        int candidate = -1;
+        int step = direction >= 0 ? +1 : -1;
+        int start = direction >= 0 ? 0 : _children.Count - 1;
+        int end = direction >= 0 ? _children.Count : -1;
+        for (int i = start; i != end; i += step)
+        {
+            if (!_children[i].Visible || !_children[i].IsFocusable)
+                continue;
+            int top = _tops[i];
+            int height = _children[i].Measure(Bounds.Width, theme);
+            if (top >= _scroll && top + height <= _scroll + ViewHeight)
+            {
+                candidate = i;
+                break;
+            }
+        }
+        if (candidate >= 0)
+            _focusIndex = candidate;
     }
 
     /// <inheritdoc />

@@ -21,6 +21,9 @@ namespace SharpProspero.Ui;
 /// <param name="content">The screen's usual content.</param>
 public sealed class ModalHost(UiElement content) : UiElement
 {
+    private UiElement? _focusRestoreOnClose;
+    private UiElement? _pendingFocusRestore;
+
     /// <summary>The screen's usual content, shown when no panel is open.</summary>
     public UiElement Content { get; set; } = content;
 
@@ -41,10 +44,20 @@ public sealed class ModalHost(UiElement content) : UiElement
 
     /// <summary>Opens <paramref name="modal"/> on top of the content.</summary>
     /// <exception cref="ArgumentNullException"><paramref name="modal"/> is null.</exception>
-    public void Show(UiElement modal)
+    public void Show(UiElement modal) => Show(modal, focusToRestoreOnClose: null);
+
+    /// <summary>
+    /// Opens <paramref name="modal"/> on top of the content and remembers
+    /// <paramref name="focusToRestoreOnClose"/> so the underlying content's focus is restored once
+    /// the modal closes. When null, focus falls back to the first focusable of the content on the
+    /// following layout — matching the parameterless overload.
+    /// </summary>
+    /// <exception cref="ArgumentNullException"><paramref name="modal"/> is null.</exception>
+    public void Show(UiElement modal, UiElement? focusToRestoreOnClose)
     {
         ArgumentNullException.ThrowIfNull(modal);
         Modal = modal;
+        _focusRestoreOnClose = focusToRestoreOnClose;
     }
 
     /// <summary>Closes the open panel, if any, and returns focus to the content.</summary>
@@ -53,7 +66,30 @@ public sealed class ModalHost(UiElement content) : UiElement
         if (Modal is null)
             return;
         Modal = null;
+        // Hand the saved element to the next layout pass through PopFocusRestoreCandidate so the
+        // screen restores what was focused before Show ran, rather than snapping to the first
+        // content focusable.
+        _pendingFocusRestore = _focusRestoreOnClose;
+        _focusRestoreOnClose = null;
         Closed?.Invoke();
+    }
+
+    /// <inheritdoc/>
+    internal override bool HandleCancel()
+    {
+        // While a modal is open, cancel closes only the modal — the screen behind must not pop.
+        if (Modal is null)
+            return false;
+        Close();
+        return true;
+    }
+
+    /// <inheritdoc/>
+    internal override UiElement? PopFocusRestoreCandidate()
+    {
+        UiElement? c = _pendingFocusRestore;
+        _pendingFocusRestore = null;
+        return c;
     }
 
     /// <inheritdoc/>

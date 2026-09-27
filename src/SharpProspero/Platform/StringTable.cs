@@ -24,6 +24,10 @@ namespace SharpProspero.Platform;
 public sealed class StringTable
 {
     private readonly Dictionary<string, string> _entries = new(StringComparer.Ordinal);
+    // Preserved insertion order so a table read from JSON round-trips through a writer with a
+    // predictable diff and a caller enumerating Entries sees them in the order the author wrote.
+    private readonly List<string> _keys = new();
+    private StringTable? _fallback;
 
     /// <summary>Creates a table for <paramref name="locale"/>, optionally chained to a <paramref name="fallback"/>.</summary>
     /// <exception cref="ArgumentException"><paramref name="locale"/> is null or empty.</exception>
@@ -31,17 +35,36 @@ public sealed class StringTable
     {
         ArgumentException.ThrowIfNullOrEmpty(locale);
         Locale = locale;
-        Fallback = fallback;
+        _fallback = fallback;
     }
 
     /// <summary>The language tag this table holds, such as "en" or "fr".</summary>
     public string Locale { get; }
 
     /// <summary>The table consulted when a key is missing here, or null.</summary>
-    public StringTable? Fallback { get; }
+    public StringTable? Fallback => _fallback;
+
+    /// <summary>
+    /// Chains this table onto a new fallback after construction. Used by loaders that assemble a
+    /// map of tables and only know the fallback link once every table has been read.
+    /// </summary>
+    public void SetFallback(StringTable? fallback) => _fallback = fallback;
 
     /// <summary>How many entries this table holds directly, not counting the fallback.</summary>
     public int Count => _entries.Count;
+
+    /// <summary>The keys this table holds directly, in the order they were added.</summary>
+    public IReadOnlyList<string> Keys => _keys;
+
+    /// <summary>The direct entries in the order they were added.</summary>
+    public IEnumerable<KeyValuePair<string, string>> Entries
+    {
+        get
+        {
+            foreach (string k in _keys)
+                yield return new KeyValuePair<string, string>(k, _entries[k]);
+        }
+    }
 
     /// <summary>Adds or replaces one entry and returns this table so calls chain.</summary>
     /// <exception cref="ArgumentNullException">An argument is null.</exception>
@@ -49,6 +72,8 @@ public sealed class StringTable
     {
         ArgumentNullException.ThrowIfNull(key);
         ArgumentNullException.ThrowIfNull(value);
+        if (!_entries.ContainsKey(key))
+            _keys.Add(key);
         _entries[key] = value;
         return this;
     }
@@ -63,26 +88,49 @@ public sealed class StringTable
         return this;
     }
 
+    /// <summary>
+    /// Looks up a plural form: <paramref name="baseKey"/> plus the CLDR class suffix
+    /// (<c>.one</c>, <c>.other</c>, ...). Returns whether a form was found in this table or its
+    /// fallback chain.
+    /// </summary>
+    public bool TryGetPlural(string baseKey, string classSuffix, out string value)
+    {
+        ArgumentNullException.ThrowIfNull(baseKey);
+        ArgumentNullException.ThrowIfNull(classSuffix);
+        return TryGet($"{baseKey}.{classSuffix}", out value);
+    }
+
+    // Realistic locale chains never exceed a handful of steps (e.g. en-GB → en-US → root); the
+    // cap catches a cyclic SetFallback wiring so the walk terminates instead of stack-overflowing
+    // when a caller closes the chain into a loop by accident.
+    private const int MaxFallbackDepth = 16;
+
     /// <summary>Whether <paramref name="key"/> resolves here or in the fallback chain.</summary>
     public bool Contains(string key)
     {
         ArgumentNullException.ThrowIfNull(key);
-        return _entries.ContainsKey(key) || (Fallback?.Contains(key) ?? false);
+        StringTable? node = this;
+        for (int depth = 0; node is not null && depth < MaxFallbackDepth; depth++, node = node._fallback)
+        {
+            if (node._entries.ContainsKey(key))
+                return true;
+        }
+        return false;
     }
 
     /// <summary>Looks up <paramref name="key"/>, following the fallback chain; returns whether it was found.</summary>
     public bool TryGet(string key, out string value)
     {
         ArgumentNullException.ThrowIfNull(key);
-        if (_entries.TryGetValue(key, out string? own))
+        StringTable? node = this;
+        for (int depth = 0; node is not null && depth < MaxFallbackDepth; depth++, node = node._fallback)
         {
-            value = own;
-            return true;
+            if (node._entries.TryGetValue(key, out string? own))
+            {
+                value = own;
+                return true;
+            }
         }
-
-        if (Fallback is not null)
-            return Fallback.TryGet(key, out value);
-
         value = key;
         return false;
     }

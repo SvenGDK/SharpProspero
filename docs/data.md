@@ -19,6 +19,7 @@ buffers, text, XML, and message digests. Each has its own page; this is the map.
 | [XML](xml.md) | `SharpProspero.Xml` | A streaming reader and writer, and a small document model. |
 | [Hashing and checksums](hashing.md) | `SharpProspero.Security` | CRC-32, MD5, SHA-1, SHA-2, SHA-3, HMAC, and AES-128 (block, CBC and XTS). |
 | [Compression and archives](compression.md) | `SharpProspero.Compression` | DEFLATE, zlib and gzip in both directions, and a ZIP reader and writer. |
+| [Globalization and localization](globalization.md) | `SharpProspero.Globalization` | Language tags and the ambient culture, translated strings, plural forms, per-language number and date presentation, Unicode bidirectional text, grapheme and line-break iterators, script routing, a font cascade, the interface layout mirror, localized titles, on-screen keyboard languages, and the account-language read. |
 
 Most of these are self-contained: they compute in memory and touch no device service, so they work the
 same on the console and in a unit test. The rest reach outside the process. On the storage page,

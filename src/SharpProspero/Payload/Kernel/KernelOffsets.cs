@@ -154,6 +154,16 @@ public static class KernelOffsets
     public const uint Fw1260 = 0x12600000;
     /// <summary>Firmware 12.70.</summary>
     public const uint Fw1270 = 0x12700000;
+    /// <summary>Firmware 13.00.</summary>
+    public const uint Fw1300 = 0x13000000;
+    /// <summary>Firmware 13.20.</summary>
+    public const uint Fw1320 = 0x13200000;
+    /// <summary>Firmware 13.40.</summary>
+    public const uint Fw1340 = 0x13400000;
+    /// <summary>Firmware 13.42.</summary>
+    public const uint Fw1342 = 0x13420000;
+    /// <summary>Firmware 13.60.</summary>
+    public const uint Fw1360 = 0x13600000;
 
     /// <summary>
     /// Returns the kdata-relative offset of the <c>allproc</c> list head for the given
@@ -186,6 +196,10 @@ public static class KernelOffsets
         Fw1100 or Fw1120 or Fw1140 or Fw1160 => 0x2875D70,
 
         Fw1200 or Fw1202 or Fw1220 or Fw1240 or Fw1260 or Fw1270 => 0x2885E00,
+
+        Fw1300 or Fw1320 => 0x28C5E00,
+
+        Fw1340 or Fw1342 or Fw1360 => 0x28C9E80,
 
         _ => 0,
     };
@@ -221,6 +235,14 @@ public static class KernelOffsets
         Fw905 or Fw920 or Fw940 or Fw960 => 0x0D73064,
 
         Fw1000 or Fw1001 or Fw1020 or Fw1040 or Fw1060 => 0x0D79064,
+
+        Fw1100 or Fw1120 or Fw1140 or Fw1160 => 0x0D8C064,
+
+        Fw1200 or Fw1202 or Fw1220 or Fw1240 or Fw1260 or Fw1270 => 0x0D83064,
+
+        Fw1300 or Fw1320 or Fw1340 or Fw1342 => 0x0D99064,
+
+        Fw1360 => 0x0D9C064,
 
         _ => 0,
     };
@@ -295,12 +317,24 @@ public static class KernelOffsets
 
         Fw1000 or Fw1001 or Fw1020 or Fw1040 or Fw1060 => 0x2FA3510,
 
+        Fw1100 or Fw1120 or Fw1140 or Fw1160 => 0x30B7510,
+
+        Fw1200 or Fw1202 or Fw1220 or Fw1240 or Fw1260 or Fw1270 => 0x30D7510,
+
+        Fw1300 or Fw1320 => 0x3133510,
+
+        Fw1340 or Fw1342 => 0x3137510,
+
+        Fw1360 => 0x314B510,
+
         _ => 0,
     };
 
     /// <summary>
     /// Returns the kernel data section base address for the given firmware version,
-    /// or zero if the firmware is not recognized.
+    /// or zero if the firmware is not recognized. A zero result for a firmware family
+    /// whose other offsets are populated means the base address is still to be pinned
+    /// empirically; the boot path derives it at run time in that case.
     /// </summary>
     public static ulong KdataBase(uint firmwareVersion) => (firmwareVersion & VersionMask) switch
     {
@@ -359,6 +393,22 @@ public static class KernelOffsets
             && SecurityFlags(firmwareVersion) != 0
             && Rootvnode(firmwareVersion) != 0
             && KdataBase(firmwareVersion) != 0;
+    }
+
+    /// <summary>
+    /// Returns <see langword="true"/> when the firmware version carries every offset
+    /// the unjail-payload boot path consults. The unjail path derives its root vnode
+    /// at run time (walking the process list to init's file-descriptor root directory)
+    /// and receives the kdata base from the loader's payload arguments, so it does not
+    /// require <see cref="Rootvnode"/> or <see cref="KdataBase"/> to be populated. The
+    /// two remaining requirements are <see cref="Allproc"/> for the process-list walk
+    /// and <see cref="KernelPmapStore"/> for the direct-map read the shell unlock
+    /// uses to reach the shell's text section.
+    /// </summary>
+    public static bool IsSupportedForUnjail(uint firmwareVersion)
+    {
+        return Allproc(firmwareVersion) != 0
+            && KernelPmapStore(firmwareVersion) != 0;
     }
 
     // ---- FW 10.01 absolute addresses (for backward compatibility) ----
@@ -579,6 +629,10 @@ public static class KernelOffsets
         Fw1140 => 0x1B0B20,
         Fw1160 => 0x1B08E0,
         Fw1200 or Fw1202 or Fw1220 or Fw1240 or Fw1260 or Fw1270 => 0x1AF4D0,
+        Fw1300 => 0x1B6A60,
+        Fw1320 => 0x1B6AC0,
+        Fw1340 or Fw1342 => 0x1B6D30,
+        Fw1360 => 0x1B6E50,
         _ => 0,
     };
 
@@ -599,6 +653,8 @@ public static class KernelOffsets
         Fw1100 or Fw1120 => 0xDCBC78,
         Fw1140 or Fw1160 => 0xDCBC98,
         Fw1200 or Fw1202 or Fw1220 or Fw1240 or Fw1260 or Fw1270 => 0xDCC978,
+        Fw1300 or Fw1320 => 0xDDD8B8,
+        Fw1340 or Fw1342 or Fw1360 => 0xDDD8F8,
         _ => 0,
     };
 
@@ -882,6 +938,12 @@ public static class KernelOffsets
         Fw1100 or Fw1120 or Fw1140 or Fw1160 => 0x2E04F18,
 
         Fw1200 or Fw1202 or Fw1220 or Fw1240 or Fw1260 or Fw1270 => 0x2E1CFB8,
+
+        Fw1300 or Fw1320 => 0x2E74FF8,
+
+        Fw1340 or Fw1342 => 0x2E78FF8,
+
+        Fw1360 => 0x2E88FF8,
 
         _ => 0,
     };

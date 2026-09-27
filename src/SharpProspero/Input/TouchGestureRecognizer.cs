@@ -85,6 +85,28 @@ public sealed class TouchGestureRecognizer
         var gestures = new List<TouchGesture>();
         ulong time = state.TimestampMicroseconds;
 
+        // A sample the system intercepted (PS button opened the quick menu, another module has
+        // the pad) arrives as GamePadState.Neutral: time == 0 and no active touches, while a
+        // previous frame's touch is still in progress on the recognizer. Running the release
+        // branch on that would treat the still-held contact as if it were lifted and emit a
+        // spurious Tap or DoubleTap. Drop the in-progress tracking without emitting anything so
+        // the recognizer resumes cleanly when real samples return. A legitimate first sample at
+        // time==0 with an active touch enters the "contact began" branch below unchanged.
+        bool suddenNeutralDuringTouch = time == 0
+            && state.TouchCount == 0
+            && !state.Touch1.IsActive
+            && !state.Touch2.IsActive
+            && (_active || _twoActive);
+        if (suddenNeutralDuringTouch)
+        {
+            _active = false;
+            _twoActive = false;
+            _moved = false;
+            _held = false;
+            _hasTap = false;
+            return gestures;
+        }
+
         if (state.TouchCount >= 2 && state.Touch1.IsActive && state.Touch2.IsActive)
         {
             _active = false; // a single-contact gesture does not carry through a two-finger phase

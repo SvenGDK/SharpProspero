@@ -51,11 +51,24 @@ public sealed unsafe class SaveDataPicker : IDisposable
     {
         CommonDialog.EnsureInitialized();
 
-        // The item list is read by the service while the dialog is open, so it lives on the heap for
-        // the picker's lifetime and is freed on dispose. The picker owns both the module and the list
-        // from the moment each is taken, so every way out of this sequence gives both back.
-        var items = (SceSaveDataDialogItems*)NativeMemory.AllocZeroed((nuint)sizeof(SceSaveDataDialogItems));
-        var picker = new SaveDataPicker(SystemModule.Load(SystemModuleId.SaveDataDialog), items);
+        // The item list is read by the service while the dialog is open, so it lives on the heap
+        // for the picker's lifetime and is freed on dispose. Load the module BEFORE the allocation
+        // so a failed load never orphans the items buffer with no path to Dispose; if the alloc
+        // then throws, hand the module back before propagating the exception. The picker owns both
+        // the module and the list from the moment each is taken, so every way out of this sequence
+        // gives both back.
+        SystemModule module = SystemModule.Load(SystemModuleId.SaveDataDialog);
+        SceSaveDataDialogItems* items;
+        try
+        {
+            items = (SceSaveDataDialogItems*)NativeMemory.AllocZeroed((nuint)sizeof(SceSaveDataDialogItems));
+        }
+        catch
+        {
+            module.Dispose();
+            throw;
+        }
+        var picker = new SaveDataPicker(module, items);
         try
         {
             SceResult.ThrowIfFailed(Native.sceSaveDataDialogInitialize(), nameof(Native.sceSaveDataDialogInitialize));

@@ -45,6 +45,13 @@ public static unsafe partial class PayloadKernel
     private static ulong s_qaFlagsAddr;
     private static ulong s_prison0;
 
+    // Cached root-vnode POINTER (not address). On firmwares whose kdata offset for
+    // rootvnode is not on file, the pointer is discovered at runtime by walking the
+    // process list to init (pid 1) and reading its file-descriptor table's root
+    // directory. The value is invariant for the life of the boot, so one discovery
+    // per session is enough for every subsequent caller.
+    private static ulong s_rootvnodePtr;
+
     /// <summary>
     /// Queries the running firmware version via <c>sysctl({CTL_KERN, 46})</c> and caches the
     /// result. Returns a BCD-encoded version (e.g. <c>0x10010000</c> for FW 10.01).
@@ -83,14 +90,84 @@ public static unsafe partial class PayloadKernel
         }
     }
 
+    /// <summary>
+    /// Returns the kdata absolute address of the kernel's <c>rootvnode</c> global for
+    /// firmwares whose kdata-relative offset is on file, or zero when it is not. The
+    /// zero return is a signal to the caller that the kdata-read path is unavailable
+    /// and the runtime discovery path (<see cref="DiscoverRootVnode"/>) must be used
+    /// instead.
+    /// </summary>
     private static ulong RootvnodeAddress
     {
         get
         {
-            if (s_rootvnodeAddr == 0)
-                s_rootvnodeAddr = KdataBase + KernelOffsets.Rootvnode(GetSystemSoftwareVersion());
+            if (s_rootvnodeAddr != 0)
+                return s_rootvnodeAddr;
+            ulong offset = KernelOffsets.Rootvnode(GetSystemSoftwareVersion());
+            if (offset == 0)
+                return 0;
+            s_rootvnodeAddr = KdataBase + offset;
             return s_rootvnodeAddr;
         }
+    }
+
+    /// <summary>
+    /// Discovers the kernel's root vnode by walking the process list to the init
+    /// process (pid 1) and reading its file-descriptor table's root directory
+    /// pointer. Init's <c>fd_rdir</c> is the kernel's own root vnode because init is
+    /// spawned before any process namespace change; the value is identical to the
+    /// <c>rootvnode</c> kdata global that later releases would name at a shifted
+    /// offset. Firmware-invariant on every FreeBSD-derived release the platform runs.
+    /// Cached across calls; returns zero when the walk fails (broken list, pid 1
+    /// missing, filedesc pointer unreadable).
+    /// </summary>
+    private static ulong DiscoverRootVnode(PayloadKernelIo io)
+    {
+        if (s_rootvnodePtr != 0)
+            return s_rootvnodePtr;
+        ulong proc = io.ReadU64(AllprocAddress);
+        int safety = 0;
+        while (proc != 0 && safety < MaxAllprocIterations)
+        {
+            int pid = (int)io.ReadU32(proc + (ulong)KernelOffsets.ProcPid);
+            if (pid == 1)
+            {
+                ulong fd = io.ReadU64(proc + (ulong)KernelOffsets.ProcFd);
+                if (fd == 0)
+                    return 0;
+                ulong rdir = io.ReadU64(fd + (ulong)KernelOffsets.FdRdir);
+                if (rdir == 0)
+                    return 0;
+                s_rootvnodePtr = rdir;
+                return rdir;
+            }
+            proc = io.ReadU64(proc + (ulong)KernelOffsets.ProcList);
+            safety++;
+        }
+        return 0;
+    }
+
+    /// <summary>
+    /// Reads the kernel's root vnode pointer, preferring the kdata-relative offset
+    /// path when the running firmware carries a confirmed <see cref="KernelOffsets.Rootvnode"/>
+    /// value, and falling back to the runtime discovery path (init's <c>fd_rdir</c>)
+    /// otherwise. The pointer is cached across calls.
+    /// </summary>
+    private static ulong ReadRootVnodeCached(PayloadKernelIo io)
+    {
+        if (s_rootvnodePtr != 0)
+            return s_rootvnodePtr;
+        ulong addr = RootvnodeAddress;
+        if (addr != 0)
+        {
+            ulong direct = io.ReadU64(addr);
+            if (direct != 0)
+            {
+                s_rootvnodePtr = direct;
+                return direct;
+            }
+        }
+        return DiscoverRootVnode(io);
     }
 
     private static ulong QaFlagsAddress
@@ -239,16 +316,15 @@ public static unsafe partial class PayloadKernel
 
     /// <summary>
     /// Applies the shell-install credential and filesystem escalation to a process whose kernel
-    /// address is already known. Five uid/gid fields are zeroed (<c>cr_uid</c>, <c>cr_ruid</c>,
-    /// <c>cr_svuid</c>, <c>cr_rgid</c>, <c>cr_svgid</c>). The authorization id is set to the
-    /// value the running firmware accepts for a shell-install worker
+    /// address is already known. Six uid/gid fields are zeroed (<c>cr_uid</c>, <c>cr_ruid</c>,
+    /// <c>cr_svuid</c>, <c>cr_ngroups</c>, <c>cr_rgid</c>, <c>cr_svgid</c>). The authorization
+    /// id is set to the value the running firmware accepts for a shell-install worker
     /// (<see cref="SelectAuthIdForFirmware"/>). Both capability quadwords are set to all-ones,
-    /// the whole thirty-two-byte attribute block is written with byte 0 set to <c>0x80</c> and
-    /// every other byte set to zero, the root directory vnode is pointed at the kernel's own
-    /// root vnode, and the jail directory pointer is cleared to NULL. This is the credential
-    /// surface a shell-install worker on the platform's own launch pipeline carries; it is what
-    /// a promoted title needs to reach <c>/user</c>, <c>/data</c>, and every partition the shell
-    /// already owns.
+    /// the privilege attribute byte at <c>ucred+0x83</c> (<see cref="KernelOffsets.UcredSceAttr0"/>)
+    /// is set to <c>0x80</c>, and both the root and jail directory vnodes are pointed at the
+    /// kernel's own root vnode. This is the credential surface a shell-install worker on the
+    /// platform's own launch pipeline carries; it is what a promoted title needs to reach
+    /// <c>/user</c>, <c>/data</c>, and every partition the shell already owns.
     /// </summary>
     /// <returns><see langword="true"/> when the credential and filedesc pointers were read
     /// successfully and all writes were issued; <see langword="false"/> if either pointer read
@@ -263,25 +339,28 @@ public static unsafe partial class PayloadKernel
         io.WriteU32(ucred + (ulong)KernelOffsets.UcredUid, 0);
         io.WriteU32(ucred + (ulong)KernelOffsets.UcredRuid, 0);
         io.WriteU32(ucred + (ulong)KernelOffsets.UcredSvuid, 0);
+        io.WriteU32(ucred + (ulong)KernelOffsets.UcredNgroups, 0);
         io.WriteU32(ucred + (ulong)KernelOffsets.UcredRgid, 0);
         io.WriteU32(ucred + (ulong)KernelOffsets.UcredSvgid, 0);
         io.WriteU64(ucred + (ulong)KernelOffsets.UcredSceAuthId, SelectAuthIdForFirmware(GetSystemSoftwareVersion()));
         io.WriteU64(ucred + (ulong)KernelOffsets.UcredSceCaps, 0xFFFF_FFFF_FFFF_FFFF);
         io.WriteU64(ucred + (ulong)KernelOffsets.UcredSceCaps + 8, 0xFFFF_FFFF_FFFF_FFFF);
-        // Write the whole 32-byte cr_sceAttrs block: byte 0 to 0x80, every other byte to 0,
-        // matching the install-service escalation pattern the platform's own launch pipeline
-        // sets on a shell-side install worker.
-        byte* attrs = stackalloc byte[32];
-        for (int i = 0; i < 32; i++) attrs[i] = 0;
-        attrs[0] = 0x80;
-        io.Write(ucred + (ulong)KernelOffsets.UcredSceAttrs, attrs, 32);
+        // Write the single privilege attribute byte at ucred+0x83. The 32-byte block that
+        // starts at ucred+0x80 (UcredSceAttrs) holds several credential fields; the one the
+        // sandbox check reads for the "unsandboxed" bit is the byte at +0x83, three bytes
+        // into the block. Writing a fresh 32-byte block would zero the surrounding fields
+        // and unsandbox nothing, since the bit the check reads would still be zero after
+        // the block write clobbered whatever byte position the code wrote into.
+        io.WriteU8(ucred + (ulong)KernelOffsets.UcredSceAttr0, 0x80);
+        // Root and jail directories both point at the kernel's own root vnode. The sandbox
+        // escape needs BOTH: a null jail directory pointer looks correct on paper (nothing to
+        // jail into) but the FreeBSD-derived path resolver walks the jail root when resolving
+        // an absolute path under an nsfs mount, and a null read there fails path resolution
+        // with EINVAL before the escalated credential is even consulted. Pointing the jail
+        // directory at the kernel root matches the shell's own credential surface for a
+        // fully-elevated worker.
         io.WriteU64(fd + (ulong)KernelOffsets.FdRdir, rootvnode);
-        // Jail directory is cleared to NULL. A non-null jail directory keeps the FreeBSD-derived
-        // kernel's is_in_sandbox check firing on every open under an nsfs mount, which refuses
-        // /user and /data with EINVAL regardless of the escalated credential. A NULL pointer here
-        // tells the kernel the process has no jail; the widened root directory then resolves those
-        // paths through the kernel's own root vnode.
-        io.WriteU64(fd + (ulong)KernelOffsets.FdJdir, 0);
+        io.WriteU64(fd + (ulong)KernelOffsets.FdJdir, rootvnode);
 
         return true;
     }
@@ -323,7 +402,7 @@ public static unsafe partial class PayloadKernel
         ulong proc = WalkAllprocForPid(io, pid);
         if (proc == 0)
             return false;
-        ulong rootvnode = io.ReadU64(RootvnodeAddress);
+        ulong rootvnode = ReadRootVnodeCached(io);
         if (rootvnode == 0)
             return false;
         return JailbreakProcess(io, proc, rootvnode);
@@ -335,7 +414,7 @@ public static unsafe partial class PayloadKernel
     /// </summary>
     public static void RemoveJail(PayloadKernelIo io, ulong proc)
     {
-        ulong rootvnode = io.ReadU64(RootvnodeAddress);
+        ulong rootvnode = ReadRootVnodeCached(io);
         ulong filedesc = io.ReadU64(proc + (ulong)KernelOffsets.ProcFd);
         io.WriteU64(filedesc + (ulong)KernelOffsets.FdRdir, rootvnode);
         io.WriteU64(filedesc + (ulong)KernelOffsets.FdJdir, rootvnode);
@@ -350,6 +429,7 @@ public static unsafe partial class PayloadKernel
         io.WriteU32(ucred + (ulong)KernelOffsets.UcredUid, 0);
         io.WriteU32(ucred + (ulong)KernelOffsets.UcredRuid, 0);
         io.WriteU32(ucred + (ulong)KernelOffsets.UcredSvuid, 0);
+        io.WriteU32(ucred + (ulong)KernelOffsets.UcredNgroups, 0);
         io.WriteU32(ucred + (ulong)KernelOffsets.UcredRgid, 0);
         io.WriteU32(ucred + (ulong)KernelOffsets.UcredSvgid, 0);
         io.WriteU64(ucred + (ulong)KernelOffsets.UcredPrison, GetPrison0(io));
@@ -367,11 +447,15 @@ public static unsafe partial class PayloadKernel
 
     /// <summary>
     /// Returns the kernel's root vnode pointer. This is the vnode that an unjailed process's
-    /// file descriptor table root directory should point to.
+    /// file descriptor table root directory should point to. Firmwares whose kdata offset
+    /// for <c>rootvnode</c> is on file are read directly through the kdata absolute address;
+    /// firmwares whose offset is not on file discover the vnode at run time by walking the
+    /// process list to init and reading its file-descriptor table's root directory. The
+    /// pointer is cached across calls.
     /// </summary>
     public static ulong GetRootVnode(PayloadKernelIo io)
     {
-        return io.ReadU64(RootvnodeAddress);
+        return ReadRootVnodeCached(io);
     }
 
     /// <summary>
@@ -611,11 +695,13 @@ public static unsafe partial class PayloadKernel
 
     /// <summary>
     /// Removes the filesystem jail from a process by pointing its root and jail directory vnodes
-    /// to the kernel's own root vnode. Dispatches through the CRT-emitted accessors.
+    /// to the kernel's own root vnode. Dispatches through the CRT-emitted accessors, with
+    /// runtime discovery of the root vnode as a fallback for firmwares whose kdata offset is
+    /// unverified (see <see cref="GetRootVnode()"/>).
     /// </summary>
     public static void RemoveJail(int pid)
     {
-        ulong rootvnode = CrtGetRootVnode();
+        ulong rootvnode = GetRootVnode();
         CrtSetProcRootdir(pid, rootvnode);
         CrtSetProcJaildir(pid, rootvnode);
     }
@@ -629,6 +715,7 @@ public static unsafe partial class PayloadKernel
         CrtSetUcredUid(pid, 0);
         CrtSetUcredRuid(pid, 0);
         CrtSetUcredSvuid(pid, 0);
+        CrtSetUcredNgroups(pid, 0);
         CrtSetUcredRgid(pid, 0);
         CrtSetUcredSvgid(pid, 0);
         CrtSetUcredPrison(pid, GetPrison0());
@@ -649,14 +736,25 @@ public static unsafe partial class PayloadKernel
     }
 
     /// <summary>
-    /// Returns the kernel's root vnode pointer by reading the BSS-cached address through the
-    /// CRT-emitted accessor. The CRT's init function populates this address from the per-firmware
-    /// offset table; the accessor dereferences it via copyout and returns the vnode struct pointer.
-    /// Returns zero if the BSS slot was never populated (unsupported firmware) or the copyout fails.
+    /// Returns the kernel's root vnode pointer. Reads through the CRT-emitted accessor first
+    /// so firmwares whose kdata offset for <c>rootvnode</c> is on file resolve without a
+    /// process-list walk; on firmwares whose entry in the per-firmware offset table is the
+    /// unverified zero placeholder (or where the CRT copyout failed), the runtime discovery
+    /// path walks the process list to init and reads its file-descriptor table's root
+    /// directory. The pointer is cached across calls so a second read costs a single load.
     /// </summary>
     public static ulong GetRootVnode()
     {
-        return CrtGetRootVnode();
+        if (s_rootvnodePtr != 0)
+            return s_rootvnodePtr;
+        ulong direct = CrtGetRootVnode();
+        if (direct != 0)
+        {
+            s_rootvnodePtr = direct;
+            return direct;
+        }
+        var io = new PayloadKernelIo(PayloadEntryPoint.Args);
+        return DiscoverRootVnode(io);
     }
 
     /// <summary>
@@ -691,17 +789,21 @@ public static unsafe partial class PayloadKernel
             return false;
         CrtSetUcredRuid(pid, 0);
         CrtSetUcredSvuid(pid, 0);
+        CrtSetUcredNgroups(pid, 0);
         CrtSetUcredRgid(pid, 0);
         CrtSetUcredSvgid(pid, 0);
         CrtSetUcredPrison(pid, GetPrison0());
         if (CrtSetProcRootdir(pid, rootvnode) != 0)
             return false;
-        // Jail directory is cleared to NULL. A non-null jail directory keeps the FreeBSD-derived
-        // kernel's is_in_sandbox check firing on every open under an nsfs mount, which refuses
-        // /user and /data with EINVAL regardless of the escalated credential. A NULL pointer here
-        // tells the kernel the process has no jail; the widened root directory then resolves those
-        // paths through the kernel's own root vnode.
-        if (CrtSetProcJaildir(pid, 0) != 0)
+        // Root and jail directories both point at the kernel's own root vnode. The sandbox
+        // escape needs BOTH: a null jail directory pointer looks correct on paper (nothing
+        // to jail into) but the FreeBSD-derived path resolver walks the jail root when
+        // resolving an absolute path under an nsfs mount, and a null read there fails path
+        // resolution with EINVAL before the escalated credential is consulted. Pointing the
+        // jail directory at the kernel root matches the shell's own credential surface for
+        // a fully-elevated worker and lets every subsequent open under /data and /user
+        // resolve through the same pointer fd_rdir carries.
+        if (CrtSetProcJaildir(pid, rootvnode) != 0)
             return false;
         CrtSetUcredAuthid(pid, SelectAuthIdForFirmware(GetSystemSoftwareVersion()));
         byte* caps = stackalloc byte[16];
@@ -709,10 +811,11 @@ public static unsafe partial class PayloadKernel
             caps[i] = 0xFF;
         if (CrtSetUcredCaps(pid, caps) != 0)
             return false;
-        byte* attrs = stackalloc byte[32];
-        for (int i = 0; i < 32; i++) attrs[i] = 0;
-        attrs[0] = 0x80;
-        if (CrtSetUcredAttrs(pid, attrs) != 0)
+        // Set the privilege attribute byte at ucred+0x83. The single-byte accessor writes
+        // exactly that offset; a 32-byte block write starting at ucred+0x80 would only touch
+        // the surrounding bytes and would leave the sandbox-check byte at +0x83 as its
+        // pre-escalation value, which the sandbox check reads as still-sandboxed.
+        if (CrtSetUcredSceAttr0(pid, 0x80) != 0)
             return false;
         return true;
     }
@@ -727,29 +830,30 @@ public static unsafe partial class PayloadKernel
     /// </summary>
     public static void RaisePrivileges(int pid)
     {
-        ulong rootvnode = CrtGetRootVnode();
+        ulong rootvnode = GetRootVnode();
         CrtSetUcredUid(pid, 0);
         CrtSetUcredRuid(pid, 0);
         CrtSetUcredSvuid(pid, 0);
+        CrtSetUcredNgroups(pid, 0);
         CrtSetUcredRgid(pid, 0);
         CrtSetUcredSvgid(pid, 0);
         CrtSetUcredPrison(pid, GetPrison0());
         CrtSetProcRootdir(pid, rootvnode);
-        // Jail directory is cleared to NULL. A non-null jail directory keeps the FreeBSD-derived
-        // kernel's is_in_sandbox check firing on every open under an nsfs mount, which refuses
-        // /user and /data with EINVAL regardless of the escalated credential. A NULL pointer here
-        // tells the kernel the process has no jail; the widened root directory then resolves those
-        // paths through the kernel's own root vnode.
-        CrtSetProcJaildir(pid, 0);
+        // Root and jail directories both point at the kernel's own root vnode. The sandbox
+        // escape needs BOTH: a null jail directory pointer fails path resolution under nsfs
+        // mounts with EINVAL before the escalated credential is consulted. Pointing both at
+        // the kernel root lets every subsequent open under /data and /user resolve through
+        // the same pointer.
+        CrtSetProcJaildir(pid, rootvnode);
         CrtSetUcredAuthid(pid, SelectAuthIdForFirmware(GetSystemSoftwareVersion()));
         byte* caps = stackalloc byte[16];
         for (int i = 0; i < 16; i++)
             caps[i] = 0xFF;
         CrtSetUcredCaps(pid, caps);
-        byte* attrs = stackalloc byte[32];
-        for (int i = 0; i < 32; i++) attrs[i] = 0;
-        attrs[0] = 0x80;
-        CrtSetUcredAttrs(pid, attrs);
+        // Single privilege attribute byte at ucred+0x83. See JailbreakByPid for why a
+        // 32-byte block write starting at ucred+0x80 leaves the sandbox-check byte at +0x83
+        // untouched and unsandboxes nothing.
+        CrtSetUcredSceAttr0(pid, 0x80);
     }
 
     private static bool MatchName(byte* comm, byte* name, int length)

@@ -92,10 +92,17 @@ public readonly unsafe partial struct Surface(uint* pixels, int width, int heigh
     /// <summary>Fills the rectangle at (<paramref name="x"/>, <paramref name="y"/>), clipped to bounds.</summary>
     public void FillRect(int x, int y, int width, int height, Color color)
     {
+        if (width <= 0 || height <= 0)
+            return;
+        // Compute the right/bottom extents in long so an int-overflowing width or height (a caller
+        // passing int.MaxValue as a "fill to the edge" sentinel) clamps to the surface bounds
+        // instead of wrapping negative and silently dropping the whole fill.
+        long xEnd = (long)x + width;
+        long yEnd = (long)y + height;
         int x0 = Math.Max(0, x);
         int y0 = Math.Max(0, y);
-        int x1 = Math.Min(Width, x + width);
-        int y1 = Math.Min(Height, y + height);
+        int x1 = xEnd > Width ? Width : (int)xEnd;
+        int y1 = yEnd > Height ? Height : (int)yEnd;
         if (x1 <= x0 || y1 <= y0)
             return;
         uint value = color.Value;

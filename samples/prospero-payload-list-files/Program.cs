@@ -1,6 +1,14 @@
 // Escapes the sandbox jail by rewriting the process
 // rootdir vnode to the kernel's real root, then recursively enumerates "/" with opendir/
 // readdir and outputs the listing via klog. Restores the original rootdir when done.
+//
+// The kernel-side reads and writes route through SharpProspero.Payload.Kernel.KernelOffsets:
+// the per-firmware Allproc / Rootvnode lookups feed the process-list walk and root-vnode
+// resolution, and the firmware-invariant struct field offsets (ProcFd, FdRdir) address the
+// filedesc root directory. Every firmware whose KernelOffsets.Allproc value is populated
+// (1.00 through 13.60 today) works with no rebuild; a symbol the sample does not need can
+// be fetched from SharpProspero.Payload.Kernel.KernelOffsetTables.For(fw) if a future
+// extension needs it.
 
 using System;
 using System.Runtime.InteropServices;
