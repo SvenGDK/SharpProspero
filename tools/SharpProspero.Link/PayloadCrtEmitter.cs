@@ -3532,7 +3532,21 @@ public static class PayloadCrtEmitter
         EmitFwCase(0x10, 0x02765D70);
         EmitFwCase(0x11, 0x02875D70);
         EmitFwCase(0x12, 0x02885E00);
-        EmitFwCase(0x13, 0x028C5E00);
+
+        // FW 13.x: sub-version check (13.00-13.20 vs 13.40+), as in KernelOffsets.Allproc. One value for the
+        // whole major made every payload walk the wrong process list on 13.40 and later.
+        b.AddRange([0x83, 0xF9, 0x13]);                     // cmp ecx, 0x13
+        b.AddRange([0x0F, 0x85, 0, 0, 0, 0]);               // jne .Lnot_13
+        int kiNot13Jump = b.Count - 4;
+        b.AddRange([0x3D, 0x00, 0x00, 0x40, 0x13]);         // cmp eax, 0x13400000
+        b.AddRange([0x73, 0x0A]);                            // jae .Lfw_13b (skip 10 bytes)
+        b.AddRange([0xBA, 0x00, 0x5E, 0x8C, 0x02]);         // mov edx, 0x028C5E00
+        b.AddRange([0xE9, 0, 0, 0, 0]);                     // jmp .Lfw_done
+        fwDoneJumps.Add(b.Count - 4);
+        b.AddRange([0xBA, 0x80, 0x9E, 0x8C, 0x02]);         // .Lfw_13b: mov edx, 0x028C9E80
+        b.AddRange([0xE9, 0, 0, 0, 0]);                     // jmp .Lfw_done
+        fwDoneJumps.Add(b.Count - 4);
+        WriteRel32InBLocal(kiNot13Jump, b.Count);
 
         // Default: unsupported FW
         b.AddRange([0xE9, 0, 0, 0, 0]);                     // jmp .Lki_fail_enosys

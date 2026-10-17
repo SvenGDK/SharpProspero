@@ -46,7 +46,8 @@ The kernel addresses (`allproc`, `text_base`, `bus_data_devices`, `targetid`, `u
 `vmspace_vm_pmap`, `kernel_rootvnode`) are firmware-specific. The CRT carries a per-firmware data
 table indexed by the firmware major version. The version byte arrives in BCD form (`0x10` for
 firmware 10), so the CRT converts it to a linear row index with a three-instruction sequence before
-the lookup.
+the lookup. `allproc` alone also looks at the minor version where it changes inside a major: 1.00–1.02 against
+1.05 and later, and 13.00–13.20 against 13.40 and later.
 
 Each row holds seven 32-bit column values — offsets from `kdata_base` — one per kernel symbol above.
 `__sp_kernel_init` reads the row that matches the running firmware and writes the derived addresses

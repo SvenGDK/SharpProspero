@@ -133,7 +133,8 @@ The kernel-side addresses (`allproc`, `text_base`, `bus_data_devices`, `targetid
 `vmspace_vm_pmap`, `kernel_rootvnode`) come from a per-firmware data table baked into the CRT. The
 table is indexed by the firmware major version. Because the version byte arrives in BCD form (for
 firmware 10 the byte reads `0x10`), a three-instruction sequence converts BCD to a linear row
-index before the lookup. Each row holds seven 32-bit columns:
+index before the lookup. `allproc` alone also looks at the minor version where it changes inside a major: 1.00–1.02 against
+1.05 and later, and 13.00–13.20 against 13.40 and later. Each row holds seven 32-bit columns:
 
 | Column | Meaning |
 |---|---|
